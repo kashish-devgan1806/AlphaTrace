@@ -1,0 +1,22 @@
+# AlphaTrace
+
+A multi-agent, self-verifying equity-research copilot.
+
+A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), earnings-call transcripts, and slide decks, then answers analyst questions with inline citations. Before any answer ships, a Critic agent checks every claim against its source chunk and cross-checks every number against the SEC's own machine-readable XBRL data — flagging what it can't verify instead of guessing.
+
+## Status
+
+🚧 Early build — following a 12-week / 72-session build schedule. See commit history for progress.
+
+## Architecture (evolving)
+
+- **Ingestion:** EDGAR filings + XBRL facts, earnings-call transcripts, slide decks
+- **Storage:** Postgres + pgvector
+- **Orchestration:** LangGraph (cyclic verify-and-revise loop)
+- **Agents:** Research Analyst, Sentiment/Tone, Quant/Forecast, Critic (citation + XBRL cross-check), and others
+- **Eval:** RAGAS faithfulness, citation accuracy, XBRL-grounded hallucination checks
+- **LLMOps:** Langfuse tracing, CI-gated eval regression gate, cost/latency-aware model tiering
+
+## License
+
+TBD
