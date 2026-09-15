@@ -1,0 +1,27 @@
+# Session 1: brings up Postgres with the pgvector extension available.
+# The chunks table itself is created by a migration in Session 3 — this
+# file's job today is just "pgvector is running and reachable."
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: alphatrace-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-alphatrace}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-alphatrace}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Anything dropped here runs once, in filename order, on first boot
+      # of an empty data volume (Postgres' own convention, not ours).
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-alphatrace}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
