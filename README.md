@@ -6,7 +6,9 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 
 ## Status
 
-🚧 Early build — following a 12-week / 72-session build schedule. See commit history for progress.
+🚧 Early build — following a 12-week / 72-session build schedule. See commit history for day-by-day progress.
+
+- [x] Session 1 — repo skeleton, Postgres+pgvector via Docker Compose, first EDGAR submissions pull
 
 ## Architecture (evolving)
 
@@ -16,6 +18,20 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 - **Agents:** Research Analyst, Sentiment/Tone, Quant/Forecast, Critic (citation + XBRL cross-check), and others
 - **Eval:** RAGAS faithfulness, citation accuracy, XBRL-grounded hallucination checks
 - **LLMOps:** Langfuse tracing, CI-gated eval regression gate, cost/latency-aware model tiering
+
+## Getting Started
+
+```bash
+cp .env.example .env        # then fill in SEC_USER_AGENT and Postgres creds
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+docker compose up -d        # Postgres + pgvector
+uvicorn app.main:app --reload --port 8000   # http://localhost:8000/health
+
+python scripts/edgar_pull.py AAPL           # pulls live filing metadata from EDGAR
+pytest -q                                   # offline tests, no network required
+```
 
 ## License
 
