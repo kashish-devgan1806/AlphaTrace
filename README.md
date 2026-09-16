@@ -9,6 +9,7 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 🚧 Early build — following a 12-week / 72-session build schedule. See commit history for day-by-day progress.
 
 - [x] Session 1 — repo skeleton, Postgres+pgvector via Docker Compose, first EDGAR submissions pull
+- [x] Session 2 — XBRL `companyfacts` pull, GAAP tag extraction (Revenues, GrossProfit, NetIncomeLoss)
 
 ## Architecture (evolving)
 
@@ -30,6 +31,7 @@ docker compose up -d        # Postgres + pgvector
 uvicorn app.main:app --reload --port 8000   # http://localhost:8000/health
 
 python scripts/edgar_pull.py AAPL           # pulls live filing metadata from EDGAR
+python scripts/edgar_pull.py AAPL --facts   # + extracts Revenues/GrossProfit/NetIncomeLoss from XBRL companyfacts
 pytest -q                                   # offline tests, no network required
 ```
 

@@ -2,12 +2,16 @@
 Session 1 deliverable: hit SEC EDGAR's submissions API for one ticker and
 print its filing metadata.
 
+Session 2 deliverable: also pull the companyfacts API and extract a handful
+of GAAP tags (Revenues, GrossProfit, NetIncomeLoss) into a plain dict.
+
 Usage:
     python scripts/edgar_pull.py AAPL
     python scripts/edgar_pull.py AAPL --limit 5
+    python scripts/edgar_pull.py AAPL --facts
     python scripts/edgar_pull.py NOTATICKER      # exercises the error path
 
-Two SEC endpoints are involved:
+Three SEC endpoints are involved:
   1. https://www.sec.gov/files/company_tickers.json
      A static file mapping ticker -> CIK (SEC's internal entity ID). There is
      no "look up CIK by ticker" API endpoint, so every EDGAR tool downloads
@@ -16,6 +20,12 @@ Two SEC endpoints are involved:
      The per-company filing history: entity metadata plus every recent
      filing's form type, dates, and accession number. CIK must be
      zero-padded to 10 digits in the URL.
+  3. https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json
+     Every XBRL fact the company has ever tagged, keyed by GAAP tag name.
+     Same CIK format. Each tag's values live under
+     facts.us-gaap.<Tag>.units.<UNIT>[], one array entry per filing that
+     reported it — so picking "the" value for a fiscal year means filtering
+     by fy/fp/form, not indexing the array directly.
 """
 from __future__ import annotations
 
@@ -38,7 +48,24 @@ from app.config import settings  # noqa: E402
 
 TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "company_tickers.json"
+
+# Canonical name -> candidate GAAP tags to try, in order. A single canonical
+# concept can be filed under more than one tag: most filers adopted ASC 606
+# years ago and tag revenue as RevenueFromContractWithCustomerExcludingAssessedTax
+# instead of the older Revenues tag, so Revenues alone comes back empty for
+# them. Trying candidates in order and recording which one hit means callers
+# don't have to duplicate this knowledge.
+GAAP_TAG_CANDIDATES: dict[str, list[str]] = {
+    "Revenues": [
+        "Revenues",
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+    ],
+    "GrossProfit": ["GrossProfit"],
+    "NetIncomeLoss": ["NetIncomeLoss"],
+}
 
 
 def _headers() -> dict:
@@ -79,6 +106,90 @@ def fetch_submissions(client: httpx.Client, cik: int) -> dict:
     resp = client.get(url, headers=_headers(), timeout=15)
     resp.raise_for_status()
     return resp.json()
+
+
+def fetch_companyfacts(client: httpx.Client, cik: int) -> dict:
+    url = COMPANYFACTS_URL.format(cik=cik)
+    resp = client.get(url, headers=_headers(), timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _latest_annual_entry(tag_data: dict) -> Optional[dict]:
+    """Pick the single best entry out of one tag's units.<UNIT>[] array.
+
+    Filters to full fiscal year 10-K entries (form == "10-K", fp == "FY") —
+    SEC never tags a standalone Q4 duration fact, so fp == "FY" is how the
+    annual figure is actually found, not an arbitrary choice. Ties are
+    broken by taking the entry with the latest period end date, since the
+    same fiscal year can appear more than once (e.g. also as a prior-year
+    comparative in a later filing).
+
+    Only looks at the USD unit: these three tags are dollar P&L line items,
+    so a non-USD unit would mean something is wrong with the tag choice, not
+    that a legitimate alternate value should be picked up.
+    """
+    entries = tag_data.get("units", {}).get("USD", [])
+    annual = [e for e in entries if e.get("form") == "10-K" and e.get("fp") == "FY"]
+    if not annual:
+        return None
+    return max(annual, key=lambda e: e.get("end", ""))
+
+
+def extract_gaap_facts(companyfacts: dict) -> dict[str, Optional[dict]]:
+    """Return {canonical_name: {tag, val, fy, end, accn} | None}.
+
+    `None` means none of the candidate tags for that concept had a matching
+    annual (10-K, FY) USD entry — worth surfacing explicitly rather than
+    silently omitting the key, since a missing GAAP concept is itself useful
+    information (e.g. a filer that reports under IFRS instead of US-GAAP).
+
+    A canonical name can have multiple candidate tags with *some* annual
+    data each — e.g. Apple's old `Revenues` tag still has entries up through
+    FY2018, from before it switched to
+    RevenueFromContractWithCustomerExcludingAssessedTax under ASC 606. Taking
+    the first candidate tag that merely has a match would silently pin the
+    result to that stale FY2018 value forever. So every candidate tag is
+    checked and the entry with the latest period end wins, not the first
+    tag in the list that happens to have anything at all.
+    """
+    us_gaap = companyfacts.get("facts", {}).get("us-gaap", {})
+    result: dict[str, Optional[dict]] = {}
+
+    for canonical_name, candidate_tags in GAAP_TAG_CANDIDATES.items():
+        candidates = []
+        for tag in candidate_tags:
+            if tag not in us_gaap:
+                continue
+            entry = _latest_annual_entry(us_gaap[tag])
+            if entry is not None:
+                candidates.append((tag, entry))
+
+        if not candidates:
+            result[canonical_name] = None
+        else:
+            used_tag, match = max(candidates, key=lambda pair: pair[1].get("end", ""))
+            result[canonical_name] = {
+                "tag": used_tag,
+                "val": match["val"],
+                "fy": match.get("fy"),
+                "end": match.get("end"),
+                "accn": match.get("accn"),
+            }
+
+    return result
+
+
+def print_gaap_facts(ticker: str, facts: dict[str, Optional[dict]]) -> None:
+    print(f"\n{ticker} — latest annual (10-K, FY) GAAP facts:")
+    for canonical_name, entry in facts.items():
+        if entry is None:
+            print(f"  {canonical_name}: not found (checked {GAAP_TAG_CANDIDATES[canonical_name]})")
+        else:
+            print(
+                f"  {canonical_name} [{entry['tag']}]: ${entry['val']:,} "
+                f"(FY{entry['fy']}, period end {entry['end']}, accn={entry['accn']})"
+            )
 
 
 def print_filing_metadata(ticker: str, data: dict, limit: int) -> None:
@@ -128,6 +239,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("ticker", help="Stock ticker, e.g. AAPL")
     parser.add_argument("--limit", type=int, default=10, help="How many recent filings to print (default 10)")
     parser.add_argument("--refresh-ticker-cache", action="store_true", help="Re-download company_tickers.json")
+    parser.add_argument(
+        "--facts", action="store_true", help="Also pull companyfacts and extract key GAAP tags"
+    )
     args = parser.parse_args(argv)
 
     ticker = args.ticker.upper()
@@ -153,7 +267,24 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"ERROR: network error contacting SEC: {exc}", file=sys.stderr)
             return 1
 
-    print_filing_metadata(ticker, data, args.limit)
+        print_filing_metadata(ticker, data, args.limit)
+
+        if args.facts:
+            try:
+                companyfacts = fetch_companyfacts(client, cik)
+            except httpx.HTTPStatusError as exc:
+                print(
+                    f"ERROR: SEC returned HTTP {exc.response.status_code} for companyfacts CIK {cik}: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            except httpx.HTTPError as exc:
+                print(f"ERROR: network error contacting SEC: {exc}", file=sys.stderr)
+                return 1
+
+            facts = extract_gaap_facts(companyfacts)
+            print_gaap_facts(ticker, facts)
+
     return 0
 
 

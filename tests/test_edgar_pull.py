@@ -9,7 +9,13 @@ import json
 import httpx
 import pytest
 
-from scripts.edgar_pull import fetch_submissions, load_ticker_map, print_filing_metadata
+from scripts.edgar_pull import (
+    extract_gaap_facts,
+    fetch_companyfacts,
+    fetch_submissions,
+    load_ticker_map,
+    print_filing_metadata,
+)
 
 AAPL_SUBMISSIONS_FIXTURE = {
     "cik": 320193,
@@ -105,3 +111,93 @@ def test_fetch_submissions_raises_on_http_error():
     client = httpx.Client(transport=httpx.MockTransport(_handler))
     with pytest.raises(httpx.HTTPStatusError):
         fetch_submissions(client, cik=1)
+
+
+def test_fetch_companyfacts_raises_on_http_error():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(_handler))
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_companyfacts(client, cik=1)
+
+
+def _annual_entry(fy: int, end: str, val: int, accn: str, fp: str = "FY", form: str = "10-K") -> dict:
+    return {"fy": fy, "fp": fp, "form": form, "end": end, "val": val, "accn": accn}
+
+
+def test_extract_gaap_facts_filters_to_annual_10k_entries():
+    """A tag's units.USD array holds one entry per filing that reported it,
+    including quarterly (10-Q, fp Q1/Q2/Q3) and prior-year comparative
+    entries. Extraction must pick the annual (10-K, fp FY) entry, not just
+    the last item in the array."""
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "NetIncomeLoss": {
+                    "units": {
+                        "USD": [
+                            _annual_entry(2022, "2022-09-24", 99_803_000_000, "acc-2022-fy"),
+                            _annual_entry(2023, "2022-12-31", 3_394_000_000, "acc-q1", fp="Q1", form="10-Q"),
+                            _annual_entry(2023, "2023-09-30", 96_995_000_000, "acc-2023-fy"),
+                        ]
+                    }
+                },
+                "GrossProfit": {"units": {"USD": [_annual_entry(2023, "2023-09-30", 169_148_000_000, "acc-gp")]}},
+            }
+        }
+    }
+
+    facts = extract_gaap_facts(companyfacts)
+
+    assert facts["NetIncomeLoss"]["val"] == 96_995_000_000
+    assert facts["NetIncomeLoss"]["fy"] == 2023
+    assert facts["NetIncomeLoss"]["tag"] == "NetIncomeLoss"
+    assert facts["GrossProfit"]["val"] == 169_148_000_000
+    # Revenues wasn't present under any candidate tag in this fixture.
+    assert facts["Revenues"] is None
+
+
+def test_extract_gaap_facts_falls_back_to_asc606_revenue_tag():
+    """Most large filers (Apple included) tag revenue as
+    RevenueFromContractWithCustomerExcludingAssessedTax post-ASC 606, not the
+    older Revenues tag. Extraction must fall back rather than report a false
+    'not found'."""
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "RevenueFromContractWithCustomerExcludingAssessedTax": {
+                    "units": {"USD": [_annual_entry(2023, "2023-09-30", 383_285_000_000, "acc-rev")]}
+                }
+            }
+        }
+    }
+
+    facts = extract_gaap_facts(companyfacts)
+
+    assert facts["Revenues"]["val"] == 383_285_000_000
+    assert facts["Revenues"]["tag"] == "RevenueFromContractWithCustomerExcludingAssessedTax"
+
+
+def test_extract_gaap_facts_ignores_non_usd_units():
+    """A units block for a share-count-style unit (e.g. `shares`) must not be
+    mistaken for a dollar figure just because the tag name matches."""
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "NetIncomeLoss": {
+                    "units": {"shares": [_annual_entry(2023, "2023-09-30", 15_000_000_000, "acc-wrong-unit")]}
+                }
+            }
+        }
+    }
+
+    facts = extract_gaap_facts(companyfacts)
+
+    assert facts["NetIncomeLoss"] is None
+
+
+def test_extract_gaap_facts_missing_tag_reports_none():
+    facts = extract_gaap_facts({"facts": {"us-gaap": {}}})
+
+    assert facts == {"Revenues": None, "GrossProfit": None, "NetIncomeLoss": None}
