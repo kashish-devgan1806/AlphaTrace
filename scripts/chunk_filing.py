@@ -3,6 +3,14 @@ Session 5 deliverable: fetch a filer's most recent 10-K/10-Q, split it into
 section-aware chunks (app.chunker.chunk_filing), and optionally embed +
 write them into the chunks table (app.chunks.batch_insert_chunks).
 
+Session 6 deliverable: the single-ticker pipeline body that used to live
+directly inside main() is now process_ticker() — a function that catches
+each stage's failure itself and returns a ProcessResult instead of printing
++ returning an exit code. This is what lets scripts/build_corpus.py run the
+same pipeline for several tickers in one process without one ticker's
+failure aborting the others; main() below is now a thin wrapper around it,
+preserving the single-ticker CLI's exact prior output and exit codes.
+
 Usage:
     python scripts/chunk_filing.py AAPL                # fetch + chunk + print a summary
     python scripts/chunk_filing.py AAPL --form 10-Q     # most recent 10-Q instead of 10-K
@@ -12,11 +20,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 # pyrefly: ignore [missing-import]
 import httpx
+import psycopg
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -53,14 +63,128 @@ def find_latest_filing(submissions: dict, form: str) -> Optional[dict]:
     return None
 
 
-def print_chunk_summary(ticker: str, form: str, filing: dict, records: list) -> None:
+@dataclass
+class ProcessResult:
+    """Outcome of running one ticker through pull -> chunk -> (embed+insert).
+
+    status="ok" means every requested stage completed; status="error" means
+    exactly one stage failed, named by `stage`, with `error` holding the
+    same message chunk_filing.py's old inline main() used to print
+    directly. chunk_count/section_count/section_counts stay at their zero
+    defaults when chunking was never reached. inserted is None unless
+    insert=True and the insert actually succeeded (0 is a legitimate,
+    distinct outcome from "never attempted").
+    """
+
+    ticker: str
+    status: str  # "ok" | "error"
+    stage: Optional[str] = None
+    error: Optional[str] = None
+    form: Optional[str] = None
+    filing: Optional[dict] = None
+    chunk_count: int = 0
+    section_count: int = 0
+    section_counts: dict = field(default_factory=dict)
+    inserted: Optional[int] = None
+
+
+def process_ticker(
+    client: httpx.Client,
+    ticker_map: dict[str, int],
+    ticker: str,
+    form: str,
+    insert: bool,
+    conn: Optional[psycopg.Connection] = None,
+) -> ProcessResult:
+    """Run one ticker through the full pull -> chunk -> (embed+insert)
+    pipeline, catching every stage's failure itself rather than letting it
+    raise. This is what lets a caller (main() below, or
+    scripts/build_corpus.py) run several tickers back to back without one
+    ticker's failure stopping the others — a failure here is just data on
+    the returned ProcessResult, not an exception.
+    """
+    ticker = ticker.upper()
+
+    cik = ticker_map.get(ticker)
+    if cik is None:
+        return ProcessResult(
+            ticker,
+            "error",
+            stage="ticker_lookup",
+            error=f"'{ticker}' is not in SEC's ticker list — check the symbol.",
+        )
+
+    try:
+        submissions = fetch_submissions(client, cik)
+    except httpx.HTTPError as exc:
+        return ProcessResult(
+            ticker, "error", stage="fetch_submissions", error=f"could not fetch submissions for {ticker}: {exc}"
+        )
+
+    filing = find_latest_filing(submissions, form)
+    if filing is None:
+        return ProcessResult(
+            ticker, "error", stage="find_filing", error=f"no recent {form} found for {ticker}.", form=form
+        )
+
+    try:
+        html = fetch_primary_document(client, cik, filing["accessionNumber"], filing["primaryDocument"])
+    except httpx.HTTPError as exc:
+        return ProcessResult(
+            ticker,
+            "error",
+            stage="fetch_document",
+            error=f"could not fetch primary document: {exc}",
+            form=form,
+            filing=filing,
+        )
+
+    metadata = {
+        "ticker": ticker,
+        "form": form,
+        "filing_date": filing["filingDate"],
+        "report_date": filing["reportDate"],
+    }
+    records = chunk_filing(filing["accessionNumber"], html, metadata=metadata)
+
     section_counts: dict[str, int] = {}
     for r in records:
         section_counts[r.section] = section_counts.get(r.section, 0) + 1
 
-    print(f"\n{ticker} {form} ({filing['accessionNumber']}, filed {filing['filingDate']})")
-    print(f"  {len(records)} chunks across {len(section_counts)} section(s)")
-    for section, count in section_counts.items():
+    inserted: Optional[int] = None
+    if insert:
+        try:
+            inserted = batch_insert_chunks(conn, records)
+        except Exception as exc:
+            return ProcessResult(
+                ticker,
+                "error",
+                stage="insert",
+                error=f"could not insert chunks into Postgres: {exc}",
+                form=form,
+                filing=filing,
+                chunk_count=len(records),
+                section_count=len(section_counts),
+                section_counts=section_counts,
+            )
+
+    return ProcessResult(
+        ticker,
+        "ok",
+        form=form,
+        filing=filing,
+        chunk_count=len(records),
+        section_count=len(section_counts),
+        section_counts=section_counts,
+        inserted=inserted,
+    )
+
+
+def print_chunk_summary(result: ProcessResult) -> None:
+    filing = result.filing
+    print(f"\n{result.ticker} {result.form} ({filing['accessionNumber']}, filed {filing['filingDate']})")
+    print(f"  {result.chunk_count} chunks across {result.section_count} section(s)")
+    for section, count in result.section_counts.items():
         print(f"    [{count:>3}] {section}")
 
 
@@ -73,52 +197,31 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     ticker = args.ticker.upper()
 
-    with httpx.Client() as client:
-        try:
-            ticker_map = load_ticker_map(client)
-        except httpx.HTTPError as exc:
-            print(f"ERROR: could not download SEC's ticker map: {exc}", file=sys.stderr)
-            return 1
+    # Opened before any EDGAR call (rather than after chunking, as the
+    # pre-Session-6 version did) since process_ticker() now takes the
+    # connection as a parameter — a dead DB now fails fast instead of
+    # burning SEC rate-limit budget first.
+    conn = get_connection() if args.insert else None
+    try:
+        with httpx.Client() as client:
+            try:
+                ticker_map = load_ticker_map(client)
+            except httpx.HTTPError as exc:
+                print(f"ERROR: could not download SEC's ticker map: {exc}", file=sys.stderr)
+                return 1
 
-        cik = ticker_map.get(ticker)
-        if cik is None:
-            print(f"ERROR: '{ticker}' is not in SEC's ticker list — check the symbol.", file=sys.stderr)
-            return 1
-
-        try:
-            submissions = fetch_submissions(client, cik)
-        except httpx.HTTPError as exc:
-            print(f"ERROR: could not fetch submissions for {ticker}: {exc}", file=sys.stderr)
-            return 1
-
-        filing = find_latest_filing(submissions, args.form)
-        if filing is None:
-            print(f"ERROR: no recent {args.form} found for {ticker}.", file=sys.stderr)
-            return 1
-
-        try:
-            html = fetch_primary_document(client, cik, filing["accessionNumber"], filing["primaryDocument"])
-        except httpx.HTTPError as exc:
-            print(f"ERROR: could not fetch primary document: {exc}", file=sys.stderr)
-            return 1
-
-    metadata = {
-        "ticker": ticker,
-        "form": args.form,
-        "filing_date": filing["filingDate"],
-        "report_date": filing["reportDate"],
-    }
-    records = chunk_filing(filing["accessionNumber"], html, metadata=metadata)
-
-    print_chunk_summary(ticker, args.form, filing, records)
-
-    if args.insert:
-        conn = get_connection()
-        try:
-            inserted = batch_insert_chunks(conn, records)
-        finally:
+            result = process_ticker(client, ticker_map, ticker, args.form, args.insert, conn=conn)
+    finally:
+        if conn is not None:
             conn.close()
-        print(f"\nInserted {inserted} chunks into Postgres.")
+
+    if result.status == "error":
+        print(f"ERROR: {result.error}", file=sys.stderr)
+        return 1
+
+    print_chunk_summary(result)
+    if args.insert:
+        print(f"\nInserted {result.inserted} chunks into Postgres.")
 
     return 0
 
