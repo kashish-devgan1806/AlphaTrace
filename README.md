@@ -10,6 +10,8 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 
 - [x] Session 1 — repo skeleton, Postgres+pgvector via Docker Compose, first EDGAR submissions pull
 - [x] Session 2 — XBRL `companyfacts` pull, GAAP tag extraction (Revenues, GrossProfit, NetIncomeLoss)
+- [x] Session 3 — `chunks` table migration (pgvector HNSW index, cosine distance)
+- [x] Session 4 — `embed_text()` (BAAI/bge-small-en-v1.5) + batch insert into `chunks`
 
 ## Architecture (evolving)
 
