@@ -8,8 +8,15 @@ from app.chunks import ChunkRecord, batch_insert_chunks
 
 
 class FakeCursor:
-    def __init__(self) -> None:
-        self.executemany_calls: list[tuple[str, list[tuple]]] = []
+    """`insert_flags`, if given, is a list of bools aligned with the rows
+    passed to executemany() — False stands in for a row that Postgres'
+    real ON CONFLICT (content_hash) DO NOTHING would have skipped as a
+    duplicate. Defaults to "every row is a fresh insert" when omitted."""
+
+    def __init__(self, insert_flags: list[bool] | None = None) -> None:
+        self.executemany_calls: list[tuple[str, list[tuple], bool]] = []
+        self._insert_flags = insert_flags
+        self._pos = 0
 
     def __enter__(self) -> "FakeCursor":
         return self
@@ -17,13 +24,23 @@ class FakeCursor:
     def __exit__(self, *exc_info) -> None:
         return None
 
-    def executemany(self, query: str, rows: list[tuple]) -> None:
-        self.executemany_calls.append((query, rows))
+    def executemany(self, query: str, rows: list[tuple], returning: bool = False) -> None:
+        self.executemany_calls.append((query, rows, returning))
+        if self._insert_flags is None:
+            self._insert_flags = [True] * len(rows)
+        self._pos = 0
+
+    def fetchall(self) -> list[tuple]:
+        return [(1,)] if self._insert_flags[self._pos] else []
+
+    def nextset(self) -> bool:
+        self._pos += 1
+        return self._pos < len(self._insert_flags)
 
 
 class FakeConnection:
-    def __init__(self) -> None:
-        self.cursor_obj = FakeCursor()
+    def __init__(self, insert_flags: list[bool] | None = None) -> None:
+        self.cursor_obj = FakeCursor(insert_flags)
         self.commit_calls = 0
 
     def cursor(self) -> FakeCursor:
@@ -78,8 +95,10 @@ def test_batch_insert_chunks_embeds_once_and_inserts_all_rows(monkeypatch):
     assert calls == [["risk text one", "md&a text two"]]
 
     assert len(conn.cursor_obj.executemany_calls) == 1
-    query, rows = conn.cursor_obj.executemany_calls[0]
+    query, rows, returning = conn.cursor_obj.executemany_calls[0]
     assert "INSERT INTO chunks" in query
+    assert "ON CONFLICT" in query
+    assert returning is True
     assert len(rows) == 2
 
     row0 = rows[0]
@@ -94,4 +113,28 @@ def test_batch_insert_chunks_embeds_once_and_inserts_all_rows(monkeypatch):
     assert row1[3] == [1.0, 1.0, 1.0]
     assert row1[4].obj == {"fiscal_year": 2025}
 
+    assert conn.commit_calls == 1
+
+
+def test_batch_insert_chunks_skips_rows_that_conflict_on_content_hash(monkeypatch):
+    """Reprocessing a filing that's already in the table (e.g. running
+    scripts/build_corpus.py twice) must not create duplicate rows — the
+    content_hash unique index (db/init/03_add_chunks_content_hash.sql) is
+    what Postgres itself enforces; here that's simulated by telling the
+    fake cursor which of the two rows would conflict."""
+    import app.chunks as chunks_module
+
+    monkeypatch.setattr(chunks_module, "embed_texts", lambda texts: [[0.0]] * len(texts))
+
+    # First row is a fresh chunk; second is byte-for-byte identical to a
+    # row already in the table, so its INSERT statement returns zero rows.
+    conn = FakeConnection(insert_flags=[True, False])
+    chunk_records = [
+        ChunkRecord(doc_id="doc-1", section="Item 1A", text="new chunk"),
+        ChunkRecord(doc_id="doc-1", section="Item 1A", text="already-inserted chunk"),
+    ]
+
+    inserted = batch_insert_chunks(conn, chunk_records)
+
+    assert inserted == 1  # not 2 — the duplicate wasn't counted
     assert conn.commit_calls == 1
