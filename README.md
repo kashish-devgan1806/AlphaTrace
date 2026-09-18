@@ -12,6 +12,7 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 - [x] Session 2 — XBRL `companyfacts` pull, GAAP tag extraction (Revenues, GrossProfit, NetIncomeLoss)
 - [x] Session 3 — `chunks` table migration (pgvector HNSW index, cosine distance)
 - [x] Session 4 — `embed_text()` (BAAI/bge-small-en-v1.5) + batch insert into `chunks`
+- [x] Session 5 — section-aware chunker: split 10-K/10-Q text into Part/Item sections, pack into `ChunkRecord`s sized for the embedding model
 
 ## Architecture (evolving)
 
@@ -34,6 +35,8 @@ uvicorn app.main:app --reload --port 8000   # http://localhost:8000/health
 
 python scripts/edgar_pull.py AAPL           # pulls live filing metadata from EDGAR
 python scripts/edgar_pull.py AAPL --facts   # + extracts Revenues/GrossProfit/NetIncomeLoss from XBRL companyfacts
+python scripts/chunk_filing.py AAPL         # fetches latest 10-K, chunks it, prints a per-section summary
+python scripts/chunk_filing.py AAPL --insert  # + embeds and writes the chunks into Postgres
 pytest -q                                   # offline tests, no network required
 ```
 

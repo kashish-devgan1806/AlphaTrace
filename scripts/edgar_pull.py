@@ -11,7 +11,11 @@ Usage:
     python scripts/edgar_pull.py AAPL --facts
     python scripts/edgar_pull.py NOTATICKER      # exercises the error path
 
-Three SEC endpoints are involved:
+Session 5 deliverable: fetch_primary_document() — the actual filing HTML
+(10-K/10-Q body text), not just metadata/facts about it. Feeds
+app.chunker.chunk_filing() (see scripts/chunk_filing.py).
+
+Four SEC endpoints are involved:
   1. https://www.sec.gov/files/company_tickers.json
      A static file mapping ticker -> CIK (SEC's internal entity ID). There is
      no "look up CIK by ticker" API endpoint, so every EDGAR tool downloads
@@ -26,6 +30,11 @@ Three SEC endpoints are involved:
      facts.us-gaap.<Tag>.units.<UNIT>[], one array entry per filing that
      reported it — so picking "the" value for a fiscal year means filtering
      by fy/fp/form, not indexing the array directly.
+  4. https://www.sec.gov/Archives/edgar/data/<cik>/<accession-no-dashes>/<primary_document>
+     The filing's primary document itself (the 10-K/10-Q HTML body).
+     accessionNumber and primaryDocument both come from endpoint 2's
+     parallel arrays — this endpoint doesn't do its own lookup, it just
+     assembles the URL SEC's archive expects.
 """
 from __future__ import annotations
 
@@ -49,6 +58,7 @@ from app.config import settings  # noqa: E402
 TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
+DOCUMENT_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{primary_document}"
 CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "company_tickers.json"
 
 # Canonical name -> candidate GAAP tags to try, in order. A single canonical
@@ -113,6 +123,26 @@ def fetch_companyfacts(client: httpx.Client, cik: int) -> dict:
     resp = client.get(url, headers=_headers(), timeout=15)
     resp.raise_for_status()
     return resp.json()
+
+
+def fetch_primary_document(client: httpx.Client, cik: int, accession_number: str, primary_document: str) -> str:
+    """Fetch a filing's primary document — the actual 10-K/10-Q HTML, not
+    just metadata about it. Needs accession_number and primary_document
+    exactly as fetch_submissions() returns them (recent.accessionNumber[i],
+    recent.primaryDocument[i] for the same filing index).
+
+    The archive URL's path segment drops the dashes from the accession
+    number (but the filing's own filename elsewhere keeps them) — that's
+    SEC's own inconsistency, not a choice made here.
+
+    Larger and slower than the JSON endpoints above (a filing body can run
+    several MB), hence the longer timeout.
+    """
+    accession_nodash = accession_number.replace("-", "")
+    url = DOCUMENT_URL.format(cik=cik, accession_nodash=accession_nodash, primary_document=primary_document)
+    resp = client.get(url, headers=_headers(), timeout=30)
+    resp.raise_for_status()
+    return resp.text
 
 
 def _latest_annual_entry(tag_data: dict) -> Optional[dict]:

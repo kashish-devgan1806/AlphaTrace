@@ -12,6 +12,7 @@ import pytest
 from scripts.edgar_pull import (
     extract_gaap_facts,
     fetch_companyfacts,
+    fetch_primary_document,
     fetch_submissions,
     load_ticker_map,
     print_filing_metadata,
@@ -120,6 +121,35 @@ def test_fetch_companyfacts_raises_on_http_error():
     client = httpx.Client(transport=httpx.MockTransport(_handler))
     with pytest.raises(httpx.HTTPStatusError):
         fetch_companyfacts(client, cik=1)
+
+
+def test_fetch_primary_document_builds_the_archive_url_without_dashes():
+    """The archive URL's path segment drops the accession number's dashes
+    (SEC's own convention) — this is the one thing most likely to be gotten
+    wrong by hand, so it's asserted directly rather than just checking the
+    response comes back."""
+    seen_urls = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        return httpx.Response(200, text="<html>filing body</html>")
+
+    client = httpx.Client(transport=httpx.MockTransport(_handler))
+    text = fetch_primary_document(client, cik=320193, accession_number="0000320193-25-000100", primary_document="aapl-20250927.htm")
+
+    assert text == "<html>filing body</html>"
+    assert seen_urls == [
+        "https://www.sec.gov/Archives/edgar/data/320193/000032019325000100/aapl-20250927.htm"
+    ]
+
+
+def test_fetch_primary_document_raises_on_http_error():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(_handler))
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_primary_document(client, cik=1, accession_number="0000000001-25-000001", primary_document="x.htm")
 
 
 def _annual_entry(fy: int, end: str, val: int, accn: str, fp: str = "FY", form: str = "10-K") -> dict:
