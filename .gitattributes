@@ -1,0 +1,4 @@
+# Normalise line endings in the repo to LF regardless of the contributor OS
+# (Windows autocrlf otherwise rewrites every file, and CRLF breaks shell
+# scripts and SQL mounted into the Linux Postgres container).
+* text=auto eol=lf

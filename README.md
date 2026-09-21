@@ -16,6 +16,9 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 - [x] Session 6 — wired pull → chunk → embed → insert into one multi-ticker pipeline (`scripts/build_corpus.py`), live-verified against AAPL, MSFT, NVDA
 - [x] Session 6 follow-up — `chunks` gained a `content_hash` unique index (`db/init/03_add_chunks_content_hash.sql`); re-running the pipeline against an already-ingested filing now skips duplicates instead of re-inserting them
 
+- [x] Session 7 — `search(conn, query, k, ticker=None)` (`app/search.py`): cosine top-k over pgvector with an optional ticker filter; `EXPLAIN ANALYZE` review (planner seq-scans at ~700 rows, HNSW path verified equal on top-10); first precision@k / recall@k sketch
+- [x] Session 7 cleanup — chunker fixes (MSFT page-header mislabelling, hidden inline-XBRL text, 512-token overflow, page-header/whitespace noise), `--replace` re-ingest, retry/backoff on SEC calls, distinct exit codes, config/compose hardening (`127.0.0.1` binding), `scripts/migrate.py`
+
 ## Architecture (evolving)
 
 - **Ingestion:** EDGAR filings + XBRL facts, earnings-call transcripts, slide decks
@@ -30,11 +33,10 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 ```bash
 cp .env.example .env        # then fill in SEC_USER_AGENT and Postgres creds
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
+pip install -r requirements.txt
 
-docker compose up -d        # Postgres + pgvector; db/init/*.sql only auto-applies on a fresh volume —
-                             # an existing volume needs each new migration applied by hand, e.g.:
-                             # docker exec -i alphatrace-postgres psql -U alphatrace -d alphatrace < db/init/03_add_chunks_content_hash.sql
+docker compose up -d        # Postgres + pgvector; db/init/*.sql only auto-applies on a fresh volume
+python scripts/migrate.py   # applies every db/init/*.sql in order (idempotent) — run after pulling new migrations
 uvicorn app.main:app --reload --port 8000   # http://localhost:8000/health
 
 python scripts/edgar_pull.py AAPL           # pulls live filing metadata from EDGAR
@@ -43,6 +45,9 @@ python scripts/chunk_filing.py AAPL         # fetches latest 10-K, chunks it, pr
 python scripts/chunk_filing.py AAPL --insert  # + embeds and writes the chunks into Postgres
 python scripts/build_corpus.py AAPL MSFT NVDA            # same pipeline, 3 tickers in one run
 python scripts/build_corpus.py AAPL MSFT NVDA --insert   # + embeds and writes all 3 into Postgres
+python scripts/build_corpus.py AAPL MSFT NVDA --insert --replace   # re-ingest: delete each filing's old rows first (use after the chunker changes)
+python scripts/build_corpus.py AAPL --refresh-ticker-cache         # force a fresh SEC ticker→CIK download
+python -c "from app.db import get_connection; from app.search import search; print(search(get_connection(), 'NVIDIA export controls', k=3, ticker='NVDA'))"
 pytest -q                                   # offline tests, no network required
 ```
 
