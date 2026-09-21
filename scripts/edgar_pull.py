@@ -40,7 +40,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -53,7 +56,9 @@ import httpx
 # working without requiring `python -m scripts.edgar_pull` instead.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.config import settings  # noqa: E402
+from app.config import PLACEHOLDER_USER_AGENTS, settings  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
@@ -78,11 +83,68 @@ GAAP_TAG_CANDIDATES: dict[str, list[str]] = {
 }
 
 
+# Transient failures worth retrying: SEC answers 429 when a client exceeds its
+# 10 req/s cap and occasionally 5xx under load; timeouts / connection resets
+# surface as httpx.TransportError. Anything else (403 bad User-Agent, 404 no
+# such filing) is a real answer and is raised immediately, never retried.
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+MAX_ATTEMPTS = 3
+BACKOFF_BASE_SECONDS = 1.0
+MAX_RETRY_AFTER_SECONDS = 30.0
+
+
+def _retry_delay(resp: Optional[httpx.Response], attempt: int) -> float:
+    """Exponential backoff (1s, 2s, ...), or the server's Retry-After when it
+    sends a numeric one — capped so a bad header can't stall a run."""
+    if resp is not None:
+        retry_after = resp.headers.get("Retry-After", "")
+        if retry_after.isdigit():
+            return min(float(retry_after), MAX_RETRY_AFTER_SECONDS)
+    return BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
+
+
+def _get(client: httpx.Client, url: str, timeout: float) -> httpx.Response:
+    """GET with SEC's headers, retrying transient failures with backoff, then
+    raise_for_status(). Every failure still surfaces as an httpx.HTTPError, so
+    callers' existing `except httpx.HTTPError` handling is unchanged."""
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            resp = client.get(url, headers=_headers(), timeout=timeout)
+        except httpx.TransportError as exc:
+            if attempt == MAX_ATTEMPTS:
+                raise
+            delay = _retry_delay(None, attempt)
+            logger.warning("GET %s failed (%s); retry %d/%d in %.1fs", url, exc, attempt, MAX_ATTEMPTS - 1, delay)
+            time.sleep(delay)
+            continue
+        if resp.status_code in RETRY_STATUSES and attempt < MAX_ATTEMPTS:
+            delay = _retry_delay(resp, attempt)
+            logger.warning(
+                "GET %s returned %d; retry %d/%d in %.1fs", url, resp.status_code, attempt, MAX_ATTEMPTS - 1, delay
+            )
+            time.sleep(delay)
+            continue
+        resp.raise_for_status()
+        return resp
+    raise AssertionError("unreachable")  # the loop always returns or raises
+
+
+_warned_placeholder_user_agent = False
+
+
 def _headers() -> dict:
     # SEC's fair-access policy rejects any request with no User-Agent (or a
     # generic one like the Python default "python-requests/2.x") as an
     # "Undeclared Automated Tool" — a 403 with a plain-text body, not JSON.
     # The required shape is "<Company/App name> <contact email>".
+    global _warned_placeholder_user_agent
+    if not _warned_placeholder_user_agent and any(p in settings.sec_user_agent for p in PLACEHOLDER_USER_AGENTS):
+        _warned_placeholder_user_agent = True
+        logger.warning(
+            "SEC_USER_AGENT is still a placeholder (%r); set a real contact email in .env — "
+            "SEC's fair-access policy requires one.",
+            settings.sec_user_agent,
+        )
     return {
         "User-Agent": settings.sec_user_agent,
         "Accept-Encoding": "gzip, deflate",
@@ -97,32 +159,33 @@ def load_ticker_map(client: httpx.Client, force_refresh: bool = False) -> dict[s
     data.sec.gov combined — at 10 requests/second, so a script that re-fetches
     this on every run burns rate-limit budget for no reason.
     """
-    if CACHE_PATH.exists() and not force_refresh:
-        raw = json.loads(CACHE_PATH.read_text())
-    else:
-        resp = client.get(TICKER_MAP_URL, headers=_headers(), timeout=15)
-        resp.raise_for_status()
-        raw = resp.json()
-        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_PATH.write_text(json.dumps(raw))
-
     # Shape on disk: {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, "1": {...}, ...}
     # The outer keys are meaningless row indices — only the inner dicts matter.
+    if CACHE_PATH.exists() and not force_refresh:
+        try:
+            raw = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+            return {row["ticker"].upper(): row["cik_str"] for row in raw.values()}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            # A truncated or hand-edited cache must not wedge every run
+            # forever — treat it as a miss and re-download.
+            logger.warning("ticker cache %s is unreadable (%s); re-downloading", CACHE_PATH, exc)
+
+    raw = _get(client, TICKER_MAP_URL, timeout=15).json()
+    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Write-then-rename so a crash mid-write can never leave a half-written
+    # cache file behind (os.replace is atomic on the same filesystem).
+    tmp_path = CACHE_PATH.with_name(CACHE_PATH.name + ".tmp")
+    tmp_path.write_text(json.dumps(raw), encoding="utf-8")
+    os.replace(tmp_path, CACHE_PATH)
     return {row["ticker"].upper(): row["cik_str"] for row in raw.values()}
 
 
 def fetch_submissions(client: httpx.Client, cik: int) -> dict:
-    url = SUBMISSIONS_URL.format(cik=cik)
-    resp = client.get(url, headers=_headers(), timeout=15)
-    resp.raise_for_status()
-    return resp.json()
+    return _get(client, SUBMISSIONS_URL.format(cik=cik), timeout=15).json()
 
 
 def fetch_companyfacts(client: httpx.Client, cik: int) -> dict:
-    url = COMPANYFACTS_URL.format(cik=cik)
-    resp = client.get(url, headers=_headers(), timeout=15)
-    resp.raise_for_status()
-    return resp.json()
+    return _get(client, COMPANYFACTS_URL.format(cik=cik), timeout=15).json()
 
 
 def fetch_primary_document(client: httpx.Client, cik: int, accession_number: str, primary_document: str) -> str:
@@ -140,9 +203,7 @@ def fetch_primary_document(client: httpx.Client, cik: int, accession_number: str
     """
     accession_nodash = accession_number.replace("-", "")
     url = DOCUMENT_URL.format(cik=cik, accession_nodash=accession_nodash, primary_document=primary_document)
-    resp = client.get(url, headers=_headers(), timeout=30)
-    resp.raise_for_status()
-    return resp.text
+    return _get(client, url, timeout=30).text
 
 
 def _latest_annual_entry(tag_data: dict) -> Optional[dict]:
@@ -273,13 +334,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--facts", action="store_true", help="Also pull companyfacts and extract key GAAP tags"
     )
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     ticker = args.ticker.upper()
 
     with httpx.Client() as client:
         try:
             ticker_map = load_ticker_map(client, force_refresh=args.refresh_ticker_cache)
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, ValueError) as exc:
             print(f"ERROR: could not download SEC's ticker map: {exc}", file=sys.stderr)
             return 1
 

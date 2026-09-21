@@ -2,6 +2,7 @@
 Postgres, and embed_texts() is monkeypatched so no model or DB is touched."""
 from __future__ import annotations
 
+import pytest
 from psycopg.types.json import Jsonb
 
 from app.chunks import ChunkRecord, batch_insert_chunks
@@ -15,6 +16,7 @@ class FakeCursor:
 
     def __init__(self, insert_flags: list[bool] | None = None) -> None:
         self.executemany_calls: list[tuple[str, list[tuple], bool]] = []
+        self.execute_calls: list[tuple[str, tuple]] = []
         self._insert_flags = insert_flags
         self._pos = 0
 
@@ -23,6 +25,9 @@ class FakeCursor:
 
     def __exit__(self, *exc_info) -> None:
         return None
+
+    def execute(self, query: str, params: tuple = ()) -> None:
+        self.execute_calls.append((query, params))
 
     def executemany(self, query: str, rows: list[tuple], returning: bool = False) -> None:
         self.executemany_calls.append((query, rows, returning))
@@ -42,12 +47,16 @@ class FakeConnection:
     def __init__(self, insert_flags: list[bool] | None = None) -> None:
         self.cursor_obj = FakeCursor(insert_flags)
         self.commit_calls = 0
+        self.rollback_calls = 0
 
     def cursor(self) -> FakeCursor:
         return self.cursor_obj
 
     def commit(self) -> None:
         self.commit_calls += 1
+
+    def rollback(self) -> None:
+        self.rollback_calls += 1
 
 
 def test_batch_insert_chunks_empty_list_is_a_noop(monkeypatch):
@@ -138,3 +147,62 @@ def test_batch_insert_chunks_skips_rows_that_conflict_on_content_hash(monkeypatc
 
     assert inserted == 1  # not 2 — the duplicate wasn't counted
     assert conn.commit_calls == 1
+
+
+def test_batch_insert_chunks_rolls_back_and_reraises_when_the_insert_fails(monkeypatch):
+    """A failed INSERT leaves a non-autocommit connection in an aborted
+    transaction; without a rollback every later statement on the same
+    (shared) connection would fail too."""
+    import app.chunks as chunks_module
+
+    monkeypatch.setattr(chunks_module, "embed_texts", lambda texts: [[0.0]] * len(texts))
+
+    conn = FakeConnection()
+
+    def boom(query, rows, returning=False):
+        raise RuntimeError("insert failed")
+
+    conn.cursor_obj.executemany = boom
+
+    with pytest.raises(RuntimeError, match="insert failed"):
+        batch_insert_chunks(conn, [ChunkRecord(doc_id="d", section="s", text="t")])
+
+    assert conn.rollback_calls == 1
+    assert conn.commit_calls == 0
+
+
+def test_batch_insert_chunks_replace_deletes_the_filings_old_rows_first(monkeypatch):
+    import app.chunks as chunks_module
+
+    monkeypatch.setattr(chunks_module, "embed_texts", lambda texts: [[0.0]] * len(texts))
+    conn = FakeConnection()
+    chunk_records = [
+        ChunkRecord(doc_id="doc-b", section="s", text="one"),
+        ChunkRecord(doc_id="doc-a", section="s", text="two"),
+        ChunkRecord(doc_id="doc-a", section="s", text="three"),
+    ]
+
+    batch_insert_chunks(conn, chunk_records, replace=True)
+
+    (delete_sql, delete_params), = conn.cursor_obj.execute_calls
+    assert delete_sql.startswith("DELETE FROM chunks WHERE doc_id")
+    assert delete_params == (["doc-a", "doc-b"],)
+    assert conn.commit_calls == 1  # delete + insert commit together
+
+
+def test_batch_insert_chunks_default_never_deletes(monkeypatch):
+    import app.chunks as chunks_module
+
+    monkeypatch.setattr(chunks_module, "embed_texts", lambda texts: [[0.0]] * len(texts))
+    conn = FakeConnection()
+
+    batch_insert_chunks(conn, [ChunkRecord(doc_id="d", section="s", text="t")])
+
+    assert conn.cursor_obj.execute_calls == []
+
+
+def test_batch_insert_chunks_replace_with_empty_batch_deletes_nothing():
+    conn = FakeConnection()
+
+    assert batch_insert_chunks(conn, [], replace=True) == 0
+    assert conn.cursor_obj.execute_calls == []

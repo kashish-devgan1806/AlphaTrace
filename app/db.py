@@ -9,6 +9,10 @@ from pgvector.psycopg import register_vector
 
 from app.config import settings
 
+# Without a timeout a dead or firewalled database makes connect() hang for the
+# OS default (minutes) instead of failing fast.
+CONNECT_TIMEOUT_SECONDS = 10
+
 
 def get_connection() -> psycopg.Connection:
     """Open a new connection with the pgvector type adapter registered.
@@ -17,9 +21,9 @@ def get_connection() -> psycopg.Connection:
     list[float] into the `vector` column's wire format (or back) — it would
     round-trip through psycopg's default adapter and fail, not silently
     misbehave. Registering it here, once, means every caller downstream
-    (batch_insert_chunks today, search() in a later session) gets a
+    (batch_insert_chunks and search()) gets a
     connection that already speaks `vector` correctly.
     """
-    conn = psycopg.connect(settings.database_url)
+    conn = psycopg.connect(settings.database_url, connect_timeout=CONNECT_TIMEOUT_SECONDS)
     register_vector(conn)
     return conn

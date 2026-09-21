@@ -231,3 +231,93 @@ def test_extract_gaap_facts_missing_tag_reports_none():
     facts = extract_gaap_facts({"facts": {"us-gaap": {}}})
 
     assert facts == {"Revenues": None, "GrossProfit": None, "NetIncomeLoss": None}
+
+
+def _no_sleep(monkeypatch):
+    slept = []
+    monkeypatch.setattr("scripts.edgar_pull.time.sleep", lambda s: slept.append(s))
+    return slept
+
+
+def test_get_retries_transient_5xx_then_succeeds(monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    statuses = iter([503, 429, 200])
+
+    def handler(request):
+        code = next(statuses)
+        return httpx.Response(code, json={"ok": True}) if code == 200 else httpx.Response(code)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    assert fetch_submissions(client, 320193) == {"ok": True}
+    assert slept == [1.0, 2.0]  # exponential backoff between the two retries
+
+
+def test_get_does_not_retry_a_404(monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_submissions(client, 320193)
+    assert len(calls) == 1 and slept == []
+
+
+def test_get_gives_up_after_max_attempts_and_raises(monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(503)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_submissions(client, 320193)
+    assert len(calls) == 3 and len(slept) == 2
+
+
+def test_get_retries_timeouts_and_honours_retry_after(monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    steps = iter(["timeout", "retry-after", "ok"])
+
+    def handler(request):
+        step = next(steps)
+        if step == "timeout":
+            raise httpx.ReadTimeout("slow", request=request)
+        if step == "retry-after":
+            return httpx.Response(429, headers={"Retry-After": "7"})
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    assert fetch_submissions(client, 1) == {"ok": True}
+    assert slept == [1.0, 7.0]
+
+
+def test_load_ticker_map_recovers_from_a_corrupt_cache_file(tmp_path, monkeypatch):
+    cache_file = tmp_path / "company_tickers.json"
+    cache_file.write_text('{"0": {"cik_str": 32019', encoding="utf-8")  # truncated mid-write
+    monkeypatch.setattr("scripts.edgar_pull.CACHE_PATH", cache_file)
+    payload = {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}}
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload)))
+
+    assert load_ticker_map(client) == {"AAPL": 320193}
+    assert json.loads(cache_file.read_text(encoding="utf-8")) == payload  # cache repaired
+    assert not (tmp_path / "company_tickers.json.tmp").exists()  # atomic write left no temp file
+
+
+def test_load_ticker_map_force_refresh_ignores_a_good_cache(tmp_path, monkeypatch):
+    cache_file = tmp_path / "company_tickers.json"
+    cache_file.write_text(json.dumps({"0": {"cik_str": 1, "ticker": "OLD", "title": "x"}}), encoding="utf-8")
+    monkeypatch.setattr("scripts.edgar_pull.CACHE_PATH", cache_file)
+    payload = {"0": {"cik_str": 2, "ticker": "NEW", "title": "y"}}
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload)))
+
+    assert load_ticker_map(client, force_refresh=True) == {"NEW": 2}

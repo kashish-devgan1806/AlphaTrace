@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,6 +96,7 @@ def process_ticker(
     form: str,
     insert: bool,
     conn: Optional[psycopg.Connection] = None,
+    replace: bool = False,
 ) -> ProcessResult:
     """Run one ticker through the full pull -> chunk -> (embed+insert)
     pipeline, catching every stage's failure itself rather than letting it
@@ -104,6 +106,13 @@ def process_ticker(
     the returned ProcessResult, not an exception.
     """
     ticker = ticker.upper()
+
+    if insert and conn is None:
+        # Fail before any network call rather than after fetching and
+        # chunking a whole filing, with a message that names the real cause.
+        return ProcessResult(
+            ticker, "error", stage="config", error="insert=True requires a database connection (conn)."
+        )
 
     cik = ticker_map.get(ticker)
     if cik is None:
@@ -116,7 +125,9 @@ def process_ticker(
 
     try:
         submissions = fetch_submissions(client, cik)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, ValueError) as exc:
+        # ValueError covers a 200 response whose body isn't valid JSON
+        # (resp.json() raises JSONDecodeError, a ValueError subclass).
         return ProcessResult(
             ticker, "error", stage="fetch_submissions", error=f"could not fetch submissions for {ticker}: {exc}"
         )
@@ -145,7 +156,17 @@ def process_ticker(
         "filing_date": filing["filingDate"],
         "report_date": filing["reportDate"],
     }
-    records = chunk_filing(filing["accessionNumber"], html, metadata=metadata)
+    try:
+        records = chunk_filing(filing["accessionNumber"], html, metadata=metadata)
+    except Exception as exc:
+        return ProcessResult(
+            ticker,
+            "error",
+            stage="chunk",
+            error=f"could not chunk filing {filing['accessionNumber']}: {exc}",
+            form=form,
+            filing=filing,
+        )
 
     section_counts: dict[str, int] = {}
     for r in records:
@@ -154,7 +175,9 @@ def process_ticker(
     inserted: Optional[int] = None
     if insert:
         try:
-            inserted = batch_insert_chunks(conn, records)
+            # Only pass replace when set, so it stays a no-op for callers
+            # (and test doubles) that predate the option.
+            inserted = batch_insert_chunks(conn, records, **({"replace": True} if replace else {}))
         except Exception as exc:
             return ProcessResult(
                 ticker,
@@ -193,7 +216,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("ticker", help="Stock ticker, e.g. AAPL")
     parser.add_argument("--form", default="10-K", choices=["10-K", "10-Q"], help="Form type to chunk")
     parser.add_argument("--insert", action="store_true", help="Also embed and write chunks into Postgres")
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="With --insert: delete the filing's existing rows first (use after the chunker changes)",
+    )
+    parser.add_argument("--refresh-ticker-cache", action="store_true", help="Re-download company_tickers.json")
     args = parser.parse_args(argv)
+    if args.replace and not args.insert:
+        parser.error("--replace requires --insert")
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     ticker = args.ticker.upper()
 
@@ -201,16 +233,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     # pre-Session-6 version did) since process_ticker() now takes the
     # connection as a parameter — a dead DB now fails fast instead of
     # burning SEC rate-limit budget first.
-    conn = get_connection() if args.insert else None
+    try:
+        conn = get_connection() if args.insert else None
+    except psycopg.Error as exc:
+        print(f"ERROR: could not connect to Postgres: {exc}", file=sys.stderr)
+        return 1
     try:
         with httpx.Client() as client:
             try:
-                ticker_map = load_ticker_map(client)
-            except httpx.HTTPError as exc:
+                ticker_map = load_ticker_map(client, **({"force_refresh": True} if args.refresh_ticker_cache else {}))
+            except (httpx.HTTPError, ValueError) as exc:
                 print(f"ERROR: could not download SEC's ticker map: {exc}", file=sys.stderr)
                 return 1
 
-            result = process_ticker(client, ticker_map, ticker, args.form, args.insert, conn=conn)
+            result = process_ticker(
+                client, ticker_map, ticker, args.form, args.insert, conn=conn, replace=args.replace
+            )
     finally:
         if conn is not None:
             conn.close()

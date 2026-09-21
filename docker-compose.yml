@@ -11,7 +11,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
       POSTGRES_DB: ${POSTGRES_DB:-alphatrace}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Loopback only: the default password is weak, so the database must not
+      # be reachable from the LAN. Containers on the compose network are
+      # unaffected (they use the service name, not the published port).
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Anything dropped here runs once, in filename order, on first boot

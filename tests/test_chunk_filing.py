@@ -182,3 +182,71 @@ def test_process_ticker_insert_failure_reports_insert_stage(monkeypatch):
     assert result.stage == "insert"
     assert result.chunk_count > 0
     assert result.inserted is None
+
+
+def test_process_ticker_invalid_json_from_sec_reports_fetch_submissions_stage():
+    handler = _router(
+        lambda req: httpx.Response(200, text="<html>rate limited</html>"),
+        lambda req: httpx.Response(200, text=FILING_HTML),
+    )
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    result = process_ticker(client, TICKER_MAP, "AAPL", "10-K", insert=False)
+
+    assert result.status == "error"
+    assert result.stage == "fetch_submissions"
+
+
+def test_process_ticker_chunking_failure_is_returned_not_raised(monkeypatch):
+    """process_ticker promises to never raise, so one ticker's bad filing
+    can't abort a multi-ticker build_corpus run."""
+    handler = _router(
+        lambda req: httpx.Response(200, json=SUBMISSIONS_WITH_10K),
+        lambda req: httpx.Response(200, text=FILING_HTML),
+    )
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    def exploding_chunk_filing(doc_id, html, metadata=None):
+        raise RuntimeError("malformed html")
+
+    monkeypatch.setattr("scripts.chunk_filing.chunk_filing", exploding_chunk_filing)
+
+    result = process_ticker(client, TICKER_MAP, "AAPL", "10-K", insert=False)
+
+    assert result.status == "error"
+    assert result.stage == "chunk"
+    assert "malformed html" in result.error
+    assert result.filing["accessionNumber"] == "0000320193-25-000100"
+
+
+def test_process_ticker_forwards_replace_to_batch_insert_chunks(monkeypatch):
+    handler = _router(
+        lambda req: httpx.Response(200, json=SUBMISSIONS_WITH_10K),
+        lambda req: httpx.Response(200, text=FILING_HTML),
+    )
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    seen = {}
+
+    def fake_batch_insert_chunks(conn, records, replace=False):
+        seen["replace"] = replace
+        return len(records)
+
+    monkeypatch.setattr("scripts.chunk_filing.batch_insert_chunks", fake_batch_insert_chunks)
+
+    result = process_ticker(client, TICKER_MAP, "AAPL", "10-K", insert=True, conn=object(), replace=True)
+
+    assert result.status == "ok"
+    assert seen["replace"] is True
+
+
+def test_process_ticker_insert_without_a_connection_fails_before_any_network_call():
+    def _unexpected(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request should be made")
+
+    client = httpx.Client(transport=httpx.MockTransport(_unexpected))
+
+    result = process_ticker(client, TICKER_MAP, "AAPL", "10-K", insert=True, conn=None)
+
+    assert result.status == "error"
+    assert result.stage == "config"
+    assert "connection" in result.error

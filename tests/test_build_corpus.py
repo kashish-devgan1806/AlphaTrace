@@ -36,7 +36,7 @@ def test_build_corpus_mixed_outcomes_continues_past_a_failure(monkeypatch, capsy
     exit_code = build_corpus.main(["AAPL", "MSFT", "NVDA"])
 
     assert calls == ["AAPL", "MSFT", "NVDA"]  # all 3 attempted, loop didn't stop at MSFT's failure
-    assert exit_code == 1
+    assert exit_code == 2  # partial failure (was 1 before exit codes were split)
 
     out = capsys.readouterr().out
     assert "AAPL" in out and "MSFT" in out and "NVDA" in out
@@ -103,3 +103,55 @@ def test_build_corpus_insert_shares_one_connection_across_tickers(monkeypatch):
     assert exit_code == 0
     assert seen_conns == [fake_conn, fake_conn, fake_conn]  # same connection every time
     assert fake_conn.closed == 1  # closed once after the loop, not per ticker
+
+
+def test_build_corpus_all_failed_exits_one_and_partial_exits_two(monkeypatch):
+    monkeypatch.setattr(build_corpus, "load_ticker_map", _fake_load_ticker_map)
+
+    def all_fail(client, ticker_map, ticker, form, insert, conn=None):
+        return ProcessResult(ticker, "error", stage="fetch_submissions", error="down")
+
+    monkeypatch.setattr(build_corpus, "process_ticker", all_fail)
+    assert build_corpus.main(["AAPL", "MSFT"]) == build_corpus.EXIT_ALL_FAILED == 1
+
+    def one_fails(client, ticker_map, ticker, form, insert, conn=None):
+        if ticker == "MSFT":
+            return ProcessResult(ticker, "error", stage="chunk", error="bad")
+        return ProcessResult(ticker, "ok", chunk_count=1, section_count=1)
+
+    monkeypatch.setattr(build_corpus, "process_ticker", one_fails)
+    assert build_corpus.main(["AAPL", "MSFT"]) == build_corpus.EXIT_PARTIAL == 2
+
+
+def test_build_corpus_refresh_flag_is_forwarded_to_load_ticker_map(monkeypatch):
+    seen = {}
+
+    def fake_load(client, force_refresh=False):
+        seen["force_refresh"] = force_refresh
+        return {"AAPL": 1}
+
+    monkeypatch.setattr(build_corpus, "load_ticker_map", fake_load)
+    monkeypatch.setattr(
+        build_corpus,
+        "process_ticker",
+        lambda client, tm, ticker, form, insert, conn=None: ProcessResult(ticker, "ok"),
+    )
+
+    build_corpus.main(["AAPL", "--refresh-ticker-cache"])
+
+    assert seen["force_refresh"] is True
+
+
+def test_build_corpus_database_down_fails_fast_before_any_edgar_call(monkeypatch, capsys):
+    import psycopg
+
+    def no_db():
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr(build_corpus, "get_connection", no_db)
+    monkeypatch.setattr(
+        build_corpus, "load_ticker_map", lambda client: (_ for _ in ()).throw(AssertionError("no network"))
+    )
+
+    assert build_corpus.main(["AAPL", "--insert"]) == build_corpus.EXIT_ALL_FAILED
+    assert "could not connect to Postgres" in capsys.readouterr().err
