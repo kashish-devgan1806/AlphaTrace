@@ -16,7 +16,7 @@ Why this model (Session 4's study step):
   with an instruction string to get its best retrieval performance —
   QUERY_INSTRUCTION below exists for that asymmetry. embed_text()/
   embed_texts() are for the chunks going into the index; embed_query() is
-  for a question at search time (Session 7's search(), not used yet).
+  for a question at search time (app/search.py's search()).
 """
 from __future__ import annotations
 
@@ -68,6 +68,13 @@ def _warn_on_truncation(model: SentenceTransformer, texts: list[str]) -> None:
             )
 
 
+def count_tokens(text: str) -> int:
+    """Token count under the embedding model's own tokenizer, special tokens
+    included — the number that max_seq_length (512) is compared against."""
+    tokenizer = _get_model().tokenizer
+    return len(tokenizer.encode(text, add_special_tokens=True, verbose=False))
+
+
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """Embed a batch of chunk texts (passages), no query instruction."""
     if not texts:
@@ -87,6 +94,6 @@ def embed_text(text: str) -> list[float]:
 def embed_query(text: str) -> list[float]:
     """Embed a search query — prefixed per the model card's instruction so
     query and passage embeddings live in the same retrieval-optimized
-    space. Not used yet (search() is a later session); added now because
-    it's a fixed property of this model, not a speculative feature."""
+    space. Called by app/search.py's search(); the prefix is a fixed property
+    of this model, not a tunable."""
     return embed_texts([QUERY_INSTRUCTION + text])[0]

@@ -123,3 +123,139 @@ def test_chunk_filing_metadata_dicts_are_independent_copies():
 def test_chunk_filing_defaults_metadata_to_empty_dict():
     records = chunk_filing("doc-1", "<p>Item 1. Business</p><p>Some text.</p>")
     assert all(r.metadata == {} for r in records)
+
+
+def test_split_into_sections_ignores_repeated_page_headers():
+    """Some filers (Microsoft) print "PART I" / "Item 1A" at the top of every
+    page. Those bare lines must not win over the real "Item 1A. ..." heading,
+    or every page before the last header gets folded into the prior section."""
+    text = (
+        "PART I\nItem 1.\nBusiness\nItem 1A.\nRisk Factors\n"  # TOC
+        "PART I\nITEM 1. BUSINESS\nbusiness body\n"
+        "PART I\nItem 1\nmore business body\n"  # page header
+        "PART I\nITEM 1A. RISK FACTORS\nrisk body one\n"
+        "PART I\nItem 1A\nrisk body two\n"  # page header
+    )
+
+    sections = dict(split_into_sections(text))
+
+    labels = [label for label in sections if label != "Preamble"]
+    assert labels == ["Part I — ITEM 1. BUSINESS", "Part I — ITEM 1A. RISK FACTORS"]
+    assert "more business body" in sections["Part I — ITEM 1. BUSINESS"]
+    assert "risk body two" in sections["Part I — ITEM 1A. RISK FACTORS"]
+
+
+def test_split_into_sections_normalizes_label_whitespace():
+    text = "PART I\nItem 1A.   Risk Factors\nrisk body\n"
+
+    (label, _), = [s for s in split_into_sections(text) if s[0] != "Preamble"]
+
+    assert label == "Part I — Item 1A. Risk Factors"
+
+
+def test_split_into_sections_bare_item_heading_does_not_absorb_next_line():
+    text = "PART I\nItem 1A\nRisk Factors\nrisk body\n"
+
+    (label, _), = [s for s in split_into_sections(text) if s[0] != "Preamble"]
+
+    assert label == "Part I — Item 1A"
+
+
+def test_strip_html_to_text_drops_hidden_inline_xbrl_header():
+    """Modern filings open with a hidden ix:header block (taxonomy URLs,
+    context ids). It must not reach the chunks, or it gets embedded."""
+    html = (
+        "<html><body>"
+        "<div style='display:none'><ix:header><ix:hidden>"
+        "<ix:nonnumeric>http://fasb.org/us-gaap/2025#LongTermDebt</ix:nonnumeric>"
+        "</ix:hidden></ix:header></div>"
+        "<div>FORM 10-K</div>"
+        "</body></html>"
+    )
+
+    text = strip_html_to_text(html)
+
+    assert "fasb.org" not in text
+    assert "FORM 10-K" in text
+
+
+def test_strip_html_to_text_drops_script_and_style_but_keeps_following_text():
+    html = "<style>p {color: red}</style><script>var x = 1;</script><p>real text</p>"
+
+    text = strip_html_to_text(html)
+
+    assert text == "real text"
+
+
+def _words(text: str) -> int:
+    return len(text.split())
+
+
+def test_chunk_filing_splits_pieces_over_the_token_limit_without_losing_text():
+    """The char budget is only a proxy: dense text can blow the model's token
+    limit inside it. Every piece must be held to max_tokens."""
+    body = " ".join(f"w{i}" for i in range(400))  # ~1.6k chars, 400 "tokens"
+    html = f"<div>Item 1A. Risk Factors</div><p>{body}</p>"
+
+    records = chunk_filing("doc", html, max_chars=5000, max_tokens=100, count_tokens=_words)
+
+    risk = [r for r in records if "w0" in r.text or r.section.endswith("Risk Factors")]
+    assert risk
+    assert all(_words(r.text) <= 100 for r in records if len(r.text) > 600)
+    rebuilt = " ".join(r.text for r in records if r.section.endswith("Risk Factors"))
+    assert all(f"w{i}" in rebuilt.split() for i in range(400))
+
+
+def test_chunk_filing_never_tokenizes_short_chunks():
+    calls = []
+
+    def spy(text: str) -> int:
+        calls.append(text)
+        return 10_000
+
+    chunk_filing("doc", "<div>Item 1A. Risk Factors</div><p>short text</p>", count_tokens=spy)
+
+    assert calls == []  # under the length floor: the model is never consulted
+
+
+def test_strip_html_to_text_normalizes_nbsp_and_space_runs():
+    text = strip_html_to_text("<p>Item 8.   Financial   Statements $60.0 billion</p>")
+
+    assert text == "Item 8. Financial Statements $60.0 billion"
+
+
+def test_chunk_filing_strips_running_page_headers_from_chunk_text():
+    html = (
+        "<div>PART I</div><div>ITEM 1A. RISK FACTORS</div>"
+        "<p>First page of risk text that is long enough to stand on its own as a real paragraph here.</p>"
+        "<div>24</div><div>PART I</div><div>Item 1A</div>"
+        "<p>Second page of risk text that is also long enough to stand on its own as a real paragraph.</p>"
+    )
+
+    (record,) = [r for r in chunk_filing("doc", html, count_tokens=_words) if "risk text" in r.text]
+
+    assert "PART I" not in record.text
+    assert "\nItem 1A\n" not in record.text
+    assert "First page" in record.text and "Second page" in record.text
+
+
+def test_chunk_filing_keeps_a_lone_page_number_that_is_table_data():
+    html = (
+        "<div>ITEM 8. FINANCIAL STATEMENTS</div>"
+        "<p>Revenue for the year, in millions of dollars, by reporting segment as shown in the table below:</p>"
+        "<div>24</div><div>31</div>"
+    )
+
+    text = " ".join(r.text for r in chunk_filing("doc", html, count_tokens=_words))
+
+    assert "24" in text and "31" in text
+
+
+def test_merge_tiny_pieces_folds_fragments_into_neighbours_but_keeps_a_lone_piece():
+    from app.chunker import _merge_tiny_pieces
+
+    big = "x" * 100
+    assert _merge_tiny_pieces(["tiny"]) == ["tiny"]
+    assert _merge_tiny_pieces([big, "-", big]) == [big + "\n\n-", big]
+    assert _merge_tiny_pieces(["-", big]) == ["-\n\n" + big]
+
