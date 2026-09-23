@@ -98,4 +98,5 @@ node_modules/
 # --- Project-specific: AI session context, not for the public repo ---
 CLAUDE.md
 PROJECT_CONTEXT.md
+ANTIGRAVITY_CONTEXT.md
 /docs/
