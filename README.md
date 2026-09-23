@@ -19,6 +19,8 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 - [x] Session 7 — `search(conn, query, k, ticker=None)` (`app/search.py`): cosine top-k over pgvector with an optional ticker filter; `EXPLAIN ANALYZE` review (planner seq-scans at ~700 rows, HNSW path verified equal on top-10); first precision@k / recall@k sketch
 - [x] Session 7 cleanup — chunker fixes (MSFT page-header mislabelling, hidden inline-XBRL text, 512-token overflow, page-header/whitespace noise), `--replace` re-ingest, retry/backoff on SEC calls, distinct exit codes, config/compose hardening (`127.0.0.1` binding), `scripts/migrate.py`
 
+- [x] Session 8 — LangGraph `AgentState` schema (`app/state.py`, with a field-by-field write/read ownership doc) and a trivial `ingest -> index` `StateGraph` (`app/graph.py`) wrapping the existing EDGAR pull and section-aware chunker into two LangGraph nodes, proving the wiring end to end with no LLM call yet
+
 ## Architecture (evolving)
 
 - **Ingestion:** EDGAR filings + XBRL facts, earnings-call transcripts, slide decks
