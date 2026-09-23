@@ -6,7 +6,7 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 
 ## Status
 
-🚧 Early build — following a 12-week / 72-session build schedule. See commit history for day-by-day progress.
+🚧 Early build — following a 56-day, agent-paired build schedule (Phase 0 Setup → Phase 1: 7 agents, 2 days each → Phase 2 Integration/Eval/Observability → Phase 3 Productionize & Ship). See commit history for day-by-day progress.
 
 - [x] Session 1 — repo skeleton, Postgres+pgvector via Docker Compose, first EDGAR submissions pull
 - [x] Session 2 — XBRL `companyfacts` pull, GAAP tag extraction (Revenues, GrossProfit, NetIncomeLoss)
@@ -21,6 +21,8 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 
 - [x] Session 8 — LangGraph `AgentState` schema (`app/state.py`, with a field-by-field write/read ownership doc) and a trivial `ingest -> index` `StateGraph` (`app/graph.py`) wrapping the existing EDGAR pull and section-aware chunker into two LangGraph nodes, proving the wiring end to end with no LLM call yet
 - [x] Session 9 — packaged Days 1-5 (EDGAR client, XBRL client, DB layer, chunker, graph scaffold) behind one importable surface, `app/toolkit.py`; re-ran the pull-chunk-embed-insert pipeline plus the new graph scaffold live against AAPL, MSFT, NVDA — **Phase 0 (Setup & Shared Infrastructure) complete**
+
+- [x] Agent 1 of 7 (Ingestion, `a1d1`) — grew `ingest_node` into the real spec: pulls the latest 10-K *and* 10-Q *and* 8-K, the XBRL facts, and (when the 8-K has one) its Exhibit 99.x slide deck into one `document_bundle`; a missing form/exhibit degrades gracefully instead of failing. Lives in the new `app/agents/` package; live-verified against AAPL, MSFT, NVDA — **Phase 1 started**
 
 ## Architecture (evolving)
 
@@ -52,6 +54,11 @@ python scripts/build_corpus.py AAPL MSFT NVDA --insert --replace   # re-ingest: 
 python scripts/build_corpus.py AAPL --refresh-ticker-cache         # force a fresh SEC ticker→CIK download
 python -c "from app.db import get_connection; from app.search import search; print(search(get_connection(), 'NVIDIA export controls', k=3, ticker='NVDA'))"
 python -c "from app.toolkit import build_graph; print(build_graph().invoke({'ticker': 'AAPL'})['chunk_count'])"  # ingest -> index graph scaffold
+python -c "
+from app.toolkit import build_graph
+b = build_graph().invoke({'ticker': 'AAPL'})['document_bundle']
+print({f: b['filings'][f] is not None for f in b['filings']}, 'xbrl:', b['xbrl_facts'] is not None, 'slide_deck:', b['slide_deck'] is not None)
+"  # Agent 1: 10-K/10-Q/8-K + XBRL facts + 8-K slide-deck exhibit, all in one bundle
 pytest -q                                   # offline tests, no network required
 ```
 
