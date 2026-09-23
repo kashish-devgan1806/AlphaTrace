@@ -14,9 +14,13 @@ Grouped by the piece each name belongs to:
 from __future__ import annotations
 
 # --- EDGAR client ---
+from scripts.chunk_filing import find_latest_filing
 from scripts.edgar_pull import (
+    fetch_document_bytes,
+    fetch_filing_index,
     fetch_primary_document,
     fetch_submissions,
+    find_exhibit_99,
     load_ticker_map,
 )
 
@@ -40,6 +44,10 @@ __all__ = [
     "load_ticker_map",
     "fetch_submissions",
     "fetch_primary_document",
+    "find_latest_filing",
+    "fetch_filing_index",
+    "find_exhibit_99",
+    "fetch_document_bytes",
     # XBRL
     "fetch_companyfacts",
     "extract_gaap_facts",

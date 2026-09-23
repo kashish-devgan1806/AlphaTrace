@@ -6,12 +6,16 @@ app.toolkit."""
 from __future__ import annotations
 
 from app import chunker, chunks, db, embeddings, graph, state, toolkit
-from scripts import edgar_pull
+from scripts import chunk_filing, edgar_pull
 
 _HOME_MODULE = {
     "load_ticker_map": edgar_pull,
     "fetch_submissions": edgar_pull,
     "fetch_primary_document": edgar_pull,
+    "find_latest_filing": chunk_filing,
+    "fetch_filing_index": edgar_pull,
+    "find_exhibit_99": edgar_pull,
+    "fetch_document_bytes": edgar_pull,
     "fetch_companyfacts": edgar_pull,
     "extract_gaap_facts": edgar_pull,
     "get_connection": db,

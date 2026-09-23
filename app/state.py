@@ -9,10 +9,23 @@ agent gets built against instead of improvising its own shape.
 Field ownership (who writes, who reads):
 
   - ticker: written by the caller (graph input); read by ingest, index.
-  - form: written by the caller (default "10-K"); read by ingest, index.
-  - filing: written by ingest; read by index.
+  - form: written by the caller (default "10-K"); no longer selects what
+    ingest fetches — ingest always pulls the latest 10-K, 10-Q, and 8-K. It
+    only selects which of the three `index` treats as the primary filing to
+    chunk (until the indexing agent chunks all three itself).
+  - filings: written by ingest; read by index. {"10-K": {...}|None,
+    "10-Q": {...}|None, "8-K": {...}|None} — the raw SEC filing-metadata
+    dict (accessionNumber/primaryDocument/filingDate/reportDate) per form,
+    or None when that form has no recent filing. A missing form is a
+    legitimate, non-error state, distinct from an entry in `errors`.
   - document_bundle: written by ingest; read by index, and later the
-    indexing agent.
+    indexing agent. Holds document_bundle["filings"][form] (html +
+    metadata, mirroring `filings` 1:1 but only present when that form's
+    primary document was actually fetched), document_bundle["xbrl_facts"]
+    (extract_gaap_facts() output, or None if the XBRL fetch failed), and
+    document_bundle["slide_deck"] (the 8-K's first Exhibit 99.x — html
+    text or raw pdf bytes, plus its archive url — or None if there's no
+    8-K, no Exhibit 99.x, or the fetch failed).
   - chunks: written by index; read later by analyst/sentiment/quant.
   - chunk_count, section_counts: written by index; read by the caller and
     smoke tests.
@@ -57,7 +70,7 @@ class AgentState(TypedDict, total=False):
     form: str
 
     # --- written by `ingest` (the ingestion agent) ---
-    filing: Optional[dict]
+    filings: dict[str, Optional[dict]]
     document_bundle: Optional[dict]
 
     # --- written by `index` (the indexing agent) ---

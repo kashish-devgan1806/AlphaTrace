@@ -12,8 +12,11 @@ import pytest
 from scripts.edgar_pull import (
     extract_gaap_facts,
     fetch_companyfacts,
+    fetch_document_bytes,
+    fetch_filing_index,
     fetch_primary_document,
     fetch_submissions,
+    find_exhibit_99,
     load_ticker_map,
     print_filing_metadata,
 )
@@ -321,3 +324,149 @@ def test_load_ticker_map_force_refresh_ignores_a_good_cache(tmp_path, monkeypatc
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload)))
 
     assert load_ticker_map(client, force_refresh=True) == {"NEW": 2}
+
+
+# Trimmed to the two tables that matter, shaped exactly like a live Apple 8-K's
+# index page (fetched and verified 2026-09-23) — same table structure (Seq,
+# Description, Document, Type, Size), same iXBRL-viewer link wrapping the
+# primary document, same lack of a Seq number on the "Complete submission
+# text file" row.
+EARNINGS_8K_INDEX_HTML = """
+<html><body>
+<table class="tableFile" summary="Document Format Files">
+  <tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>
+  <tr>
+    <td>1</td><td>8-K</td>
+    <td><a href="/ix?doc=/Archives/edgar/data/320193/000032019326000018/aapl-20260730.htm">aapl-20260730.htm</a>
+        &nbsp;&nbsp;<span style="color: green">iXBRL</span></td>
+    <td>8-K</td><td>38350</td>
+  </tr>
+  <tr>
+    <td>2</td><td>EX-99.1</td>
+    <td><a href="/Archives/edgar/data/320193/000032019326000018/a8-kex991q3202606272026.htm">a8-kex991q3202606272026.htm</a></td>
+    <td>EX-99.1</td><td>173484</td>
+  </tr>
+  <tr>
+    <td>&nbsp;</td><td>Complete submission text file</td>
+    <td><a href="/Archives/edgar/data/320193/000032019326000018/0000320193-26-000018.txt">0000320193-26-000018.txt</a></td>
+    <td>&nbsp;</td><td>417360</td>
+  </tr>
+</table>
+<table class="tableFile" summary="Data Files">
+  <tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>
+  <tr>
+    <td>3</td><td>XBRL TAXONOMY EXTENSION SCHEMA DOCUMENT</td>
+    <td><a href="/Archives/edgar/data/320193/000032019326000018/aapl-20260730.xsd">aapl-20260730.xsd</a></td>
+    <td>EX-101.SCH</td><td>3650</td>
+  </tr>
+</table>
+</body></html>
+"""
+
+NO_EXHIBIT_8K_INDEX_HTML = """
+<html><body>
+<table class="tableFile" summary="Document Format Files">
+  <tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>
+  <tr>
+    <td>1</td><td>8-K</td>
+    <td><a href="/ix?doc=/Archives/edgar/data/320193/000032019326999999/aapl-20260420.htm">aapl-20260420.htm</a></td>
+    <td>8-K</td><td>5120</td>
+  </tr>
+</table>
+</body></html>
+"""
+
+
+def test_fetch_filing_index_builds_correct_url_and_parses_rows():
+    seen_urls = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        return httpx.Response(200, text=EARNINGS_8K_INDEX_HTML)
+
+    client = httpx.Client(transport=httpx.MockTransport(_handler))
+    rows = fetch_filing_index(client, cik=320193, accession_number="0000320193-26-000018")
+
+    assert seen_urls == [
+        "https://www.sec.gov/Archives/edgar/data/320193/000032019326000018/0000320193-26-000018-index.html"
+    ]
+    # 3 real numbered document rows across both tables; the "Complete
+    # submission text file" row has no Seq number and must not be mistaken
+    # for one (4 <td> rows exist in the fixture, only 3 are real documents).
+    assert len(rows) == 3
+    assert rows[0] == {
+        "seq": "1",
+        "description": "8-K",
+        "name": "aapl-20260730.htm",
+        "href": "/ix?doc=/Archives/edgar/data/320193/000032019326000018/aapl-20260730.htm",
+        "type": "8-K",
+        "size": "38350",
+    }
+
+
+def test_fetch_filing_index_raises_on_http_error():
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_filing_index(client, cik=1, accession_number="0000000001-25-000001")
+
+
+def test_find_exhibit_99_picks_first_match_and_strips_ix_viewer_prefix():
+    parser_input = fetch_filing_index(
+        httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=EARNINGS_8K_INDEX_HTML))),
+        cik=320193,
+        accession_number="0000320193-26-000018",
+    )
+    exhibit = find_exhibit_99(parser_input)
+
+    assert exhibit is not None
+    assert exhibit["name"] == "a8-kex991q3202606272026.htm"
+    assert exhibit["type"] == "EX-99.1"
+    # The primary document's row (type "8-K") has the /ix?doc= wrapper; the
+    # matched exhibit row is a plain link and must not have it stripped
+    # incorrectly or left un-stripped on the wrong row.
+    assert not exhibit["name"].startswith("/ix")
+
+
+def test_find_exhibit_99_returns_none_when_absent():
+    rows = fetch_filing_index(
+        httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=NO_EXHIBIT_8K_INDEX_HTML))),
+        cik=320193,
+        accession_number="0000320193-26-999999",
+    )
+    assert find_exhibit_99(rows) is None
+
+
+def test_find_exhibit_99_is_case_insensitive_on_type():
+    rows = [{"type": "ex-99.2", "name": "deck.htm"}]
+    exhibit = find_exhibit_99(rows)
+    assert exhibit is not None and exhibit["name"] == "deck.htm"
+
+
+def test_find_exhibit_99_does_not_match_xbrl_ex101_rows():
+    rows = fetch_filing_index(
+        httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=EARNINGS_8K_INDEX_HTML))),
+        cik=320193,
+        accession_number="0000320193-26-000018",
+    )
+    # Sanity check on the fixture itself: the Data Files table's EX-101.SCH
+    # row must not accidentally satisfy an "EX-99" prefix match.
+    assert any(r["type"] == "EX-101.SCH" for r in rows)
+    assert find_exhibit_99(rows)["type"] != "EX-101.SCH"
+
+
+def test_fetch_document_bytes_returns_raw_content_unmodified():
+    body = b"%PDF-1.4 \x00\xff not valid utf-8"
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    client = httpx.Client(transport=httpx.MockTransport(_handler))
+    result = fetch_document_bytes(client, cik=320193, accession_number="0000320193-26-000018", document_name="deck.pdf")
+
+    assert result == body
+
+
+def test_fetch_document_bytes_raises_on_http_error():
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_document_bytes(client, cik=1, accession_number="0000000001-25-000001", document_name="x.pdf")

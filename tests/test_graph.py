@@ -1,7 +1,9 @@
-"""Offline tests for app/graph.py's trivial ingest -> index scaffold. No
-live network: the EDGAR functions app.graph imports are monkeypatched
-directly, same pattern tests/test_chunk_filing.py uses for
-scripts/chunk_filing.py's process_ticker()."""
+"""Offline tests for app/graph.py's ingest -> index scaffold. No live
+network: the EDGAR functions app.agents.ingestion imports are monkeypatched
+there (where ingest_node actually looks the names up now that it lives in
+its own module — see tests/test_ingestion_agent.py for ingest_node's own
+full test coverage; this file only covers index_node and the wired-together
+graph)."""
 from __future__ import annotations
 
 from app.graph import build_graph, index_node, ingest_node
@@ -20,18 +22,6 @@ SUBMISSIONS_WITH_10K = {
     }
 }
 
-SUBMISSIONS_ONLY_8K = {
-    "filings": {
-        "recent": {
-            "form": ["8-K"],
-            "filingDate": ["2025-07-31"],
-            "reportDate": [""],
-            "accessionNumber": ["0000320193-25-000085"],
-            "primaryDocument": ["aapl-8k.htm"],
-        }
-    }
-}
-
 FILING_HTML = (
     "<html><body>"
     "<div>Cover page text.</div>"
@@ -42,55 +32,23 @@ FILING_HTML = (
 
 
 def _patch_edgar(monkeypatch, ticker_map=TICKER_MAP, submissions=SUBMISSIONS_WITH_10K, html=FILING_HTML):
-    monkeypatch.setattr("app.graph.load_ticker_map", lambda client, force_refresh=False: ticker_map)
-    monkeypatch.setattr("app.graph.fetch_submissions", lambda client, cik: submissions)
-    monkeypatch.setattr(
-        "app.graph.fetch_primary_document", lambda client, cik, accession, doc: html
-    )
-
-
-def test_ingest_node_happy_path(monkeypatch):
-    _patch_edgar(monkeypatch)
-
-    result = ingest_node({"ticker": "AAPL"})
-
-    assert "errors" not in result
-    assert result["form"] == "10-K"
-    assert result["filing"]["accessionNumber"] == "0000320193-25-000100"
-    assert result["document_bundle"]["html"] == FILING_HTML
-    assert result["document_bundle"]["metadata"] == {
-        "ticker": "AAPL",
-        "form": "10-K",
-        "filing_date": "2025-11-01",
-        "report_date": "2025-09-27",
-    }
-
-
-def test_ingest_node_unknown_ticker_records_error(monkeypatch):
-    _patch_edgar(monkeypatch, ticker_map={})
-
-    result = ingest_node({"ticker": "AAPL"})
-
-    assert "document_bundle" not in result
-    assert len(result["errors"]) == 1
-    assert "not in SEC's ticker list" in result["errors"][0]
-
-
-def test_ingest_node_no_matching_form_records_error(monkeypatch):
-    _patch_edgar(monkeypatch, submissions=SUBMISSIONS_ONLY_8K)
-
-    result = ingest_node({"ticker": "AAPL"})
-
-    assert "document_bundle" not in result
-    assert "no recent 10-K found" in result["errors"][0]
+    monkeypatch.setattr("app.agents.ingestion.load_ticker_map", lambda client, force_refresh=False: ticker_map)
+    monkeypatch.setattr("app.agents.ingestion.fetch_submissions", lambda client, cik: submissions)
+    monkeypatch.setattr("app.agents.ingestion.fetch_primary_document", lambda client, cik, accession, doc: html)
+    monkeypatch.setattr("app.agents.ingestion.fetch_companyfacts", lambda client, cik: {})
+    monkeypatch.setattr("app.agents.ingestion.extract_gaap_facts", lambda companyfacts: {})
+    monkeypatch.setattr("app.agents.ingestion.fetch_filing_index", lambda client, cik, accession: [])
+    monkeypatch.setattr("app.agents.ingestion.find_exhibit_99", lambda rows: None)
 
 
 def test_index_node_happy_path():
     state = {
-        "filing": {"accessionNumber": "0000320193-25-000100"},
+        "form": "10-K",
+        "filings": {"10-K": {"accessionNumber": "0000320193-25-000100"}},
         "document_bundle": {
-            "html": FILING_HTML,
-            "metadata": {"ticker": "AAPL", "form": "10-K"},
+            "filings": {
+                "10-K": {"html": FILING_HTML, "metadata": {"ticker": "AAPL", "form": "10-K"}},
+            },
         },
     }
 
@@ -109,6 +67,23 @@ def test_index_node_missing_bundle_records_error():
     assert "no document_bundle to chunk" in result["errors"][0]
 
 
+def test_index_node_primary_form_missing_records_error():
+    # document_bundle exists (e.g. only an 8-K got bundled) but the primary
+    # form ("10-K") has no entry — must not raise a KeyError.
+    state = {
+        "form": "10-K",
+        "filings": {"10-K": None, "8-K": {"accessionNumber": "0000320193-25-000085"}},
+        "document_bundle": {
+            "filings": {"10-K": None, "8-K": {"html": FILING_HTML, "metadata": {}}},
+        },
+    }
+
+    result = index_node(state)
+
+    assert "chunks" not in result
+    assert "no 10-K filing available to chunk" in result["errors"][0]
+
+
 def test_build_graph_happy_path_end_to_end(monkeypatch):
     _patch_edgar(monkeypatch)
 
@@ -119,11 +94,11 @@ def test_build_graph_happy_path_end_to_end(monkeypatch):
     # merge preserves it, which is exactly the write-order guarantee
     # app/state.py's docstring documents.
     assert result["ticker"] == "AAPL"
-    assert result["filing"]["accessionNumber"] == "0000320193-25-000100"
+    assert result["filings"]["10-K"]["accessionNumber"] == "0000320193-25-000100"
     assert result["chunk_count"] > 0
     # LangGraph seeds an operator.add-reduced field to [] by default rather
     # than leaving it absent — unlike a bare node return dict, which omits
-    # a key it never set (see test_ingest_node_happy_path above).
+    # a key it never set (see tests/test_ingestion_agent.py).
     assert result["errors"] == []
 
 
@@ -140,3 +115,9 @@ def test_build_graph_unknown_ticker_flows_error_through_both_nodes(monkeypatch):
     assert "not in SEC's ticker list" in result["errors"][0]
     assert "no document_bundle to chunk" in result["errors"][1]
     assert "chunks" not in result
+
+
+def test_ingest_node_is_the_ingestion_agents_node():
+    from app.agents.ingestion import ingest_node as agent_ingest_node
+
+    assert ingest_node is agent_ingest_node
