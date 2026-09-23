@@ -1,9 +1,8 @@
 """
-Session 1 deliverable: hit SEC EDGAR's submissions API for one ticker and
-print its filing metadata.
-
-Session 2 deliverable: also pull the companyfacts API and extract a handful
-of GAAP tags (Revenues, GrossProfit, NetIncomeLoss) into a plain dict.
+Hits SEC EDGAR's submissions API for one ticker and prints its filing
+metadata; optionally also pulls the companyfacts API and extracts a
+handful of GAAP tags (Revenues, GrossProfit, NetIncomeLoss) into a plain
+dict.
 
 Usage:
     python scripts/edgar_pull.py AAPL
@@ -11,9 +10,9 @@ Usage:
     python scripts/edgar_pull.py AAPL --facts
     python scripts/edgar_pull.py NOTATICKER      # exercises the error path
 
-Session 5 deliverable: fetch_primary_document() — the actual filing HTML
-(10-K/10-Q body text), not just metadata/facts about it. Feeds
-app.chunker.chunk_filing() (see scripts/chunk_filing.py).
+fetch_primary_document() fetches the actual filing HTML (10-K/10-Q body
+text), not just metadata/facts about it. Feeds app.chunker.chunk_filing()
+(see scripts/chunk_filing.py).
 
 Four SEC endpoints are involved:
   1. https://www.sec.gov/files/company_tickers.json

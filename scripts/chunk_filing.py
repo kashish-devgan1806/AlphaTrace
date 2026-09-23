@@ -1,15 +1,15 @@
 """
-Session 5 deliverable: fetch a filer's most recent 10-K/10-Q, split it into
-section-aware chunks (app.chunker.chunk_filing), and optionally embed +
-write them into the chunks table (app.chunks.batch_insert_chunks).
+Fetches a filer's most recent 10-K/10-Q, splits it into section-aware
+chunks (app.chunker.chunk_filing), and optionally embeds + writes them
+into the chunks table (app.chunks.batch_insert_chunks).
 
-Session 6 deliverable: the single-ticker pipeline body that used to live
-directly inside main() is now process_ticker() — a function that catches
-each stage's failure itself and returns a ProcessResult instead of printing
-+ returning an exit code. This is what lets scripts/build_corpus.py run the
-same pipeline for several tickers in one process without one ticker's
-failure aborting the others; main() below is now a thin wrapper around it,
-preserving the single-ticker CLI's exact prior output and exit codes.
+The single-ticker pipeline body lives in process_ticker() — a function
+that catches each stage's failure itself and returns a ProcessResult
+instead of printing + returning an exit code. This is what lets
+scripts/build_corpus.py run the same pipeline for several tickers in one
+process without one ticker's failure aborting the others; main() below is
+a thin wrapper around it, preserving the single-ticker CLI's own output
+and exit codes.
 
 Usage:
     python scripts/chunk_filing.py AAPL                # fetch + chunk + print a summary

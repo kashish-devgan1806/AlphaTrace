@@ -1,11 +1,11 @@
 """Embedding utilities, built around BAAI/bge-small-en-v1.5.
 
-Why this model (Session 4's study step):
+Why this model:
 - It's a retrieval-tuned sentence-transformer (trained specifically for
   semantic search, not general sentence similarity), small enough to run on
   CPU with no GPU dependency for local dev, and its model card explicitly
-  recommends cosine similarity — matching the HNSW index Session 3 built
-  with `vector_cosine_ops`.
+  recommends cosine similarity — matching the HNSW index built with
+  `vector_cosine_ops`.
 - EMBEDDING_DIM below (384) is *not* independent of the model choice — it's
   bge-small-en-v1.5's fixed output width. pgvector's `vector(384)` column
   in db/init/02_create_chunks_table.sql has to match this number exactly;
@@ -48,8 +48,8 @@ def _warn_on_truncation(model: SentenceTransformer, texts: list[str]) -> None:
     longer than the model's max_seq_length (512 tokens for
     bge-small-en-v1.5) doesn't error or wrap — everything past token 512 is
     dropped before encoding, with no exception and no default log line. For
-    a chunk-sized piece of text (Session 5's section-aware chunker keeps
-    chunks well under 512 tokens) that's fine — the input was never going
+    a chunk-sized piece of text (the section-aware chunker keeps chunks
+    well under 512 tokens) that's fine — the input was never going
     to exceed it. It stops being fine the moment something upstream calls
     this on a whole raw section or document instead of an actual chunk, so
     this warns instead of trusting every caller to already know the limit.

@@ -1,18 +1,18 @@
-"""Trivial 2-node LangGraph scaffold (Session 8 / roadmap day f5).
+"""Trivial 2-node LangGraph scaffold.
 
 Proves the AgentState wiring works end to end using pieces that already
 exist — no LLM call, no new API key. `ingest` wraps the EDGAR pull
 (scripts/edgar_pull.py) into a node; `index` wraps the section-aware
 chunker (app/chunker.py) into a second node that consumes `ingest`'s
 output. This is deliberately shaped like the eventual Ingestion Agent /
-Indexing Agent split (Phase 1, agents 1 and 2) rather than one big node,
-so the boundary is already right when those agents get built for real.
+Indexing Agent split rather than one big node, so the boundary is already
+right when those agents get built for real.
 
 Why LangGraph's StateGraph over a plain function call chain: nothing here
-needs a cycle yet, but the Critic -> Analyst revise loop (Phase 1, Agent 6)
-does, and StateGraph is what makes that cycle possible later without a
-rewrite — building today's straight-line graph on the same primitive means
-Phase 2's wiring is an extension, not a migration.
+needs a cycle yet, but the Critic -> Analyst revise loop does, and
+StateGraph is what makes that cycle possible later without a rewrite —
+building today's straight-line graph on the same primitive means the
+later multi-agent wiring is an extension, not a migration.
 """
 from __future__ import annotations
 

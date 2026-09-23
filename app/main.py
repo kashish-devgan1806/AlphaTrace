@@ -1,5 +1,5 @@
-"""FastAPI stub. Session 1 goal is just proving the service boots and has a
-health endpoint — the real routes (/ask etc.) start showing up in Week 2."""
+"""FastAPI stub — proves the service boots and has a health endpoint; the
+real routes (/ask etc.) come later."""
 from fastapi import FastAPI
 
 from app.config import settings

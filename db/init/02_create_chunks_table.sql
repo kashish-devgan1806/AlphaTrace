@@ -1,6 +1,5 @@
--- Session 3: the chunks table itself. Session 1's 01_enable_pgvector.sql
--- only turned the extension on; this is the first thing that actually uses
--- it.
+-- The chunks table itself. 01_enable_pgvector.sql only turned the extension
+-- on; this is the first thing that actually uses it.
 --
 -- Column choices, justified:
 --   id        BIGSERIAL PRIMARY KEY — an opaque surrogate key. Nothing about
@@ -14,21 +13,19 @@
 --             now, not a front-loaded schema for a table that doesn't exist.
 --   section   TEXT NOT NULL — which part of the filing this chunk came from
 --             (e.g. "Item 1A Risk Factors", "MD&A"). Every chunk should be
---             attributable to a section once Session 5's section-aware
---             chunker exists, so this is NOT NULL now rather than loosened
---             later.
+--             attributable to a section once the section-aware chunker
+--             exists, so this is NOT NULL now rather than loosened later.
 --   text      TEXT NOT NULL — the chunk's raw text. No length cap: Postgres
 --             TEXT has no practical limit, and enforcing a max length here
---             would just duplicate whatever limit the chunker (Session 5)
---             or the embedding model (Session 4) already has to enforce for
---             their own reasons.
+--             would just duplicate whatever limit the chunker or the
+--             embedding model already has to enforce for their own reasons.
 --   embedding vector(384) NOT NULL — 384 = BAAI/bge-small-en-v1.5's output
 --             dimension (see app/embeddings.py). Fixed-width by pgvector's
 --             own design: every row in one `vector` column must share a
---             dimension, so this number is pinned to whichever model
---             Session 4 picked, not left generic. NOT NULL because a chunk
---             row only exists to be searched — an un-embedded chunk isn't
---             useful to store here yet.
+--             dimension, so this number is pinned to whichever model was
+--             picked, not left generic. NOT NULL because a chunk row only
+--             exists to be searched — an un-embedded chunk isn't useful to
+--             store here yet.
 --   metadata  JSONB NOT NULL DEFAULT '{}'::jsonb — everything else that
 --             doesn't earn its own column yet (ticker, form type, fiscal
 --             year, chunk index within its section, ...). JSONB over plain

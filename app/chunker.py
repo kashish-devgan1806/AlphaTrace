@@ -1,4 +1,4 @@
-"""Section-aware chunker for filing documents (Session 5).
+"""Section-aware chunker for filing documents.
 
 Turns a filing's raw primary-document HTML (10-K/10-Q) into ChunkRecord
 objects ready for app.chunks.batch_insert_chunks() — splitting first by

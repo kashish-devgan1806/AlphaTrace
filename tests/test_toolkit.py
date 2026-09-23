@@ -1,7 +1,7 @@
 """app/toolkit.py is a pure re-export surface — this test only guards that
 every name in __all__ actually resolves and is identical to the object in
 its home module, so a rename/removal in the underlying module surfaces
-here instead of silently breaking whatever Phase 1 agent imported it from
+here instead of silently breaking whatever agent imported it from
 app.toolkit."""
 from __future__ import annotations
 

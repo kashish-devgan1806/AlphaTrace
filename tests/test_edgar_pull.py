@@ -65,8 +65,8 @@ def test_print_filing_metadata_respects_limit(capsys):
 
 
 def test_print_filing_metadata_no_recent_filings(capsys):
-    """Session 1 review question: what happens if the ticker has no recent
-    filings? Answer: it's treated as a valid, empty result — not an error."""
+    """What happens if the ticker has no recent filings? It's treated as a
+    valid, empty result — not an error."""
     print_filing_metadata("SHELL", NO_FILINGS_FIXTURE, limit=10)
     out = capsys.readouterr().out
     assert "No recent filings found" in out

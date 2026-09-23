@@ -1,8 +1,7 @@
-"""Offline tests for app/graph.py's trivial ingest -> index scaffold
-(Session 8 / roadmap day f5). No live network: the EDGAR functions
-app.graph imports are monkeypatched directly, same pattern
-tests/test_chunk_filing.py uses for scripts/chunk_filing.py's
-process_ticker()."""
+"""Offline tests for app/graph.py's trivial ingest -> index scaffold. No
+live network: the EDGAR functions app.graph imports are monkeypatched
+directly, same pattern tests/test_chunk_filing.py uses for
+scripts/chunk_filing.py's process_ticker()."""
 from __future__ import annotations
 
 from app.graph import build_graph, index_node, ingest_node

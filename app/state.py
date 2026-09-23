@@ -1,12 +1,12 @@
-"""Shared AgentState schema (Session 8 / roadmap day f5).
+"""Shared AgentState schema.
 
 Every node in the LangGraph graph — today's trivial 2-node scaffold
-(app/graph.py) and, from Phase 1 onward, all seven agents — reads and
-writes this one TypedDict. Defining it once here, before any agent exists,
-is the point of this session: it's the contract every later agent gets
-built against instead of improvising its own shape.
+(app/graph.py) and, once the rest of the agent roster exists, all seven
+agents — reads and writes this one TypedDict. Defining it once here,
+before any agent exists, is the point: it's the contract every later
+agent gets built against instead of improvising its own shape.
 
-Field ownership (who writes, who reads) — the roadmap's f5 review question:
+Field ownership (who writes, who reads):
 
   - ticker: written by the caller (graph input); read by ingest, index.
   - form: written by the caller (default "10-K"); read by ingest, index.
@@ -16,28 +16,27 @@ Field ownership (who writes, who reads) — the roadmap's f5 review question:
   - chunks: written by index; read later by analyst/sentiment/quant.
   - chunk_count, section_counts: written by index; read by the caller and
     smoke tests.
-  - retrieved_evidence, draft_answer, citations: written by the (Phase 1)
-    analyst; read by the (Phase 1) critic and synthesis.
-  - sentiment_result: written by the (Phase 1) sentiment agent; read by
-    critic and synthesis.
-  - quant_result: written by the (Phase 1) quant agent; read by critic and
+  - retrieved_evidence, draft_answer, citations: written by the analyst
+    agent; read by the critic and synthesis agents.
+  - sentiment_result: written by the sentiment agent; read by critic and
     synthesis.
-  - critic_feedback: written by the (Phase 1) critic; read by the analyst
-    on a revise edge.
-  - revision_count: written by the (Phase 1) critic; read by itself, as
-    the retry cap.
-  - final_brief: written by the (Phase 1) synthesis agent; read by the
-    caller.
+  - quant_result: written by the quant agent; read by critic and
+    synthesis.
+  - critic_feedback: written by the critic agent; read by the analyst on
+    a revise edge.
+  - revision_count: written by the critic agent; read by itself, as the
+    retry cap.
+  - final_brief: written by the synthesis agent; read by the caller.
   - errors: written by any node; read by the caller / observability.
 
 Write-order matters in exactly one place today: `index` reads
 `document_bundle` and `filing`, both written by `ingest` — so `ingest` must
 run before `index` (enforced by the edge in app/graph.py, not by the state
-schema itself). Every other field is written by at most one node in the
-Phase 0 scaffold, so there's no write-order ambiguity yet. That changes in
-Phase 2 once Analyst, Sentiment, and Quant fan out in parallel and Critic's
-revise edge writes `critic_feedback` back for Analyst to re-read — flagged
-here so it isn't a surprise when Phase 1/2 gets there.
+schema itself). Every other field is written by at most one node in
+today's scaffold, so there's no write-order ambiguity yet. That changes
+once Analyst, Sentiment, and Quant fan out in parallel and Critic's revise
+edge writes `critic_feedback` back for Analyst to re-read — flagged here
+so it isn't a surprise when that wiring lands.
 
 `errors` uses `operator.add` as its reducer so every node's failures
 accumulate across a run instead of the last node's error silently
@@ -57,16 +56,16 @@ class AgentState(TypedDict, total=False):
     ticker: str
     form: str
 
-    # --- written by `ingest` (Phase 1: Ingestion Agent) ---
+    # --- written by `ingest` (the ingestion agent) ---
     filing: Optional[dict]
     document_bundle: Optional[dict]
 
-    # --- written by `index` (Phase 1: Indexing Agent) ---
+    # --- written by `index` (the indexing agent) ---
     chunks: list[ChunkRecord]
     chunk_count: int
     section_counts: dict[str, int]
 
-    # --- reserved for Phase 1 agents; unpopulated by today's scaffold ---
+    # --- reserved for the rest of the agent roster; unpopulated by today's scaffold ---
     retrieved_evidence: list[Any]
     draft_answer: Optional[str]
     citations: list[Any]

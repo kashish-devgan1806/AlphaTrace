@@ -1,5 +1,5 @@
 """
-Session 6 deliverable: run the pull -> chunk -> embed -> insert pipeline
+Runs the pull -> chunk -> embed -> insert pipeline
 (scripts.chunk_filing.process_ticker) for several tickers in one process,
 sharing a single httpx.Client, a single ticker-map load, and (with
 --insert) a single Postgres connection across all of them.

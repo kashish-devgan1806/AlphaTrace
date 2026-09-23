@@ -1,7 +1,7 @@
--- Session 6 follow-up: chunks had no natural uniqueness key (id is an
--- opaque surrogate), so re-running the ingestion pipeline against a filing
--- it had already processed silently created duplicate rows — exactly what
--- happened running scripts/build_corpus.py twice against AAPL.
+-- chunks had no natural uniqueness key (id is an opaque surrogate), so
+-- re-running the ingestion pipeline against a filing it had already
+-- processed silently created duplicate rows — exactly what happened
+-- running scripts/build_corpus.py twice against AAPL.
 --
 -- A generated, hashed column instead of a plain unique index on
 -- (doc_id, section, text) directly: those are TEXT columns with no length
