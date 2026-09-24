@@ -24,6 +24,8 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 
 - [x] Agent 1 of 7 (Ingestion, `a1d1`) — grew `ingest_node` into the real spec: pulls the latest 10-K *and* 10-Q *and* 8-K, the XBRL facts, and (when the 8-K has one) its Exhibit 99.x slide deck into one `document_bundle`; a missing form/exhibit degrades gracefully instead of failing. Lives in the new `app/agents/` package; live-verified against AAPL, MSFT, NVDA — **Phase 1 started**
 
+- [x] Agent 2 of 7 (Indexing, `a2d1`) — grew `index_node` to chunk every filing form present in the bundle (not just the primary one), extract financial-statement tables with row/column structure preserved (`app/tables.py`, serialized to Markdown, a distinct `chunk_type` from prose), and rasterize a PDF slide-deck exhibit into page images with a CLIP visual embedding (`app/visual.py`, `sentence-transformers/clip-ViT-B-32`, its own `page_embeddings` table — an HTML exhibit has no natural page boundary, so it's chunked as text instead). Lives in `app/agents/indexing.py`; live-verified against AAPL, MSFT, NVDA
+
 ## Architecture (evolving)
 
 - **Ingestion:** EDGAR filings + XBRL facts, earnings-call transcripts, slide decks
@@ -59,6 +61,11 @@ from app.toolkit import build_graph
 b = build_graph().invoke({'ticker': 'AAPL'})['document_bundle']
 print({f: b['filings'][f] is not None for f in b['filings']}, 'xbrl:', b['xbrl_facts'] is not None, 'slide_deck:', b['slide_deck'] is not None)
 "  # Agent 1: 10-K/10-Q/8-K + XBRL facts + 8-K slide-deck exhibit, all in one bundle
+python -c "
+from app.toolkit import build_graph
+r = build_graph().invoke({'ticker': 'AAPL'})
+print('chunks:', r['chunk_count'], 'visual pages:', r['visual_chunk_count'])
+"  # Agent 2: text + table chunks across every form, plus slide-deck page images when the exhibit is a PDF
 pytest -q                                   # offline tests, no network required
 ```
 

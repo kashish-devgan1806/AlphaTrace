@@ -26,9 +26,19 @@ Field ownership (who writes, who reads):
     document_bundle["slide_deck"] (the 8-K's first Exhibit 99.x — html
     text or raw pdf bytes, plus its archive url — or None if there's no
     8-K, no Exhibit 99.x, or the fetch failed).
-  - chunks: written by index; read later by analyst/sentiment/quant.
+  - chunks: written by index; read later by analyst/sentiment/quant. Holds
+    text and table chunks together (ChunkRecord.chunk_type distinguishes
+    them) across every filing form present in document_bundle, plus the
+    slide deck's own text chunks when it's an HTML exhibit.
   - chunk_count, section_counts: written by index; read by the caller and
-    smoke tests.
+    smoke tests. chunk_count covers `chunks` only (text + table), not
+    visual_pages.
+  - visual_pages, visual_chunk_count: written by index. visual_pages holds
+    one PageImage per rasterized slide-deck page (only when the deck is a
+    PDF exhibit; empty otherwise) -- not yet embedded, ready for
+    app.visual.batch_insert_page_embeddings(). visual_chunk_count is
+    len(visual_pages), split out from chunk_count since they land in a
+    different table (page_embeddings, not chunks).
   - retrieved_evidence, draft_answer, citations: written by the analyst
     agent; read by the critic and synthesis agents.
   - sentiment_result: written by the sentiment agent; read by critic and
@@ -62,6 +72,7 @@ import operator
 from typing import Annotated, Any, Optional, TypedDict
 
 from app.chunks import ChunkRecord
+from app.visual import PageImage
 
 
 class AgentState(TypedDict, total=False):
@@ -77,6 +88,8 @@ class AgentState(TypedDict, total=False):
     chunks: list[ChunkRecord]
     chunk_count: int
     section_counts: dict[str, int]
+    visual_pages: list[PageImage]
+    visual_chunk_count: int
 
     # --- reserved for the rest of the agent roster; unpopulated by today's scaffold ---
     retrieved_evidence: list[Any]

@@ -29,11 +29,17 @@ from scripts.edgar_pull import extract_gaap_facts, fetch_companyfacts
 
 # --- DB layer ---
 from app.db import get_connection
-from app.embeddings import embed_query, embed_text, embed_texts
+from app.embeddings import embed_image, embed_images, embed_query, embed_text, embed_texts
 from app.chunks import ChunkRecord, batch_insert_chunks
 
 # --- Chunker ---
 from app.chunker import chunk_filing, split_into_sections, strip_html_to_text
+
+# --- Tables ---
+from app.tables import TableRecord, extract_tables
+
+# --- Visual (slide-deck pages) ---
+from app.visual import PageImage, batch_insert_page_embeddings, rasterize_pdf
 
 # --- Graph scaffold ---
 from app.graph import build_graph, ingest_node, index_node
@@ -56,12 +62,21 @@ __all__ = [
     "embed_text",
     "embed_texts",
     "embed_query",
+    "embed_image",
+    "embed_images",
     "ChunkRecord",
     "batch_insert_chunks",
     # Chunker
     "chunk_filing",
     "split_into_sections",
     "strip_html_to_text",
+    # Tables
+    "TableRecord",
+    "extract_tables",
+    # Visual
+    "PageImage",
+    "rasterize_pdf",
+    "batch_insert_page_embeddings",
     # Graph
     "AgentState",
     "build_graph",

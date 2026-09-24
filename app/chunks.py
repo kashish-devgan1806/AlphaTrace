@@ -16,6 +16,7 @@ class ChunkRecord:
     doc_id: str
     section: str
     text: str
+    chunk_type: str = "text"  # 'text' | 'table' -- see db/init/04_add_chunk_type_and_page_embeddings.sql
     metadata: dict = field(default_factory=dict)
 
 
@@ -54,7 +55,7 @@ def batch_insert_chunks(
     vectors = embed_texts([c.text for c in chunks])
 
     rows = [
-        (chunk.doc_id, chunk.section, chunk.text, vector, Jsonb(chunk.metadata))
+        (chunk.doc_id, chunk.section, chunk.text, chunk.chunk_type, vector, Jsonb(chunk.metadata))
         for chunk, vector in zip(chunks, vectors)
     ]
 
@@ -68,8 +69,8 @@ def batch_insert_chunks(
                 )
             cur.executemany(
                 """
-                INSERT INTO chunks (doc_id, section, text, embedding, metadata)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO chunks (doc_id, section, text, chunk_type, embedding, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (content_hash) DO NOTHING
                 RETURNING id
                 """,

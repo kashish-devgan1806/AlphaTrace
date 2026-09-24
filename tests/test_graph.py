@@ -1,9 +1,10 @@
 """Offline tests for app/graph.py's ingest -> index scaffold. No live
-network: the EDGAR functions app.agents.ingestion imports are monkeypatched
-there (where ingest_node actually looks the names up now that it lives in
-its own module — see tests/test_ingestion_agent.py for ingest_node's own
-full test coverage; this file only covers index_node and the wired-together
-graph)."""
+network/model: the EDGAR functions app.agents.ingestion imports are
+monkeypatched there (where ingest_node actually looks the names up now
+that it lives in its own module); index_node lives in
+app.agents.indexing — see tests/test_indexing_agent.py for its fuller
+coverage (multi-form chunking, tables, slide-deck rasterization). This
+file covers index_node's basic wiring and the graph end to end."""
 from __future__ import annotations
 
 from app.graph import build_graph, index_node, ingest_node
@@ -67,9 +68,10 @@ def test_index_node_missing_bundle_records_error():
     assert "no document_bundle to chunk" in result["errors"][0]
 
 
-def test_index_node_primary_form_missing_records_error():
+def test_index_node_chunks_whichever_forms_are_present_even_if_primary_is_missing():
     # document_bundle exists (e.g. only an 8-K got bundled) but the primary
-    # form ("10-K") has no entry — must not raise a KeyError.
+    # form ("10-K") has no entry — index_node chunks every form actually
+    # present rather than requiring the primary one specifically.
     state = {
         "form": "10-K",
         "filings": {"10-K": None, "8-K": {"accessionNumber": "0000320193-25-000085"}},
@@ -80,8 +82,21 @@ def test_index_node_primary_form_missing_records_error():
 
     result = index_node(state)
 
-    assert "chunks" not in result
-    assert "no 10-K filing available to chunk" in result["errors"][0]
+    assert "errors" not in result
+    assert result["chunk_count"] > 0
+    assert all(c.doc_id == "0000320193-25-000085" for c in result["chunks"])
+
+
+def test_index_node_no_content_anywhere_records_error():
+    state = {
+        "filings": {"10-K": None, "10-Q": None, "8-K": None},
+        "document_bundle": {"filings": {"10-K": None, "10-Q": None, "8-K": None}, "slide_deck": None},
+    }
+
+    result = index_node(state)
+
+    assert result["chunk_count"] == 0
+    assert "no chunkable content found in document_bundle" in result["errors"][0]
 
 
 def test_build_graph_happy_path_end_to_end(monkeypatch):
@@ -121,3 +136,9 @@ def test_ingest_node_is_the_ingestion_agents_node():
     from app.agents.ingestion import ingest_node as agent_ingest_node
 
     assert ingest_node is agent_ingest_node
+
+
+def test_index_node_is_the_indexing_agents_node():
+    from app.agents.indexing import index_node as agent_index_node
+
+    assert index_node is agent_index_node

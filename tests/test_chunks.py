@@ -114,15 +114,32 @@ def test_batch_insert_chunks_embeds_once_and_inserts_all_rows(monkeypatch):
     assert row0[0] == "0000320193-25-000079"
     assert row0[1] == "Item 1A Risk Factors"
     assert row0[2] == "risk text one"
-    assert row0[3] == [0.0, 0.0, 0.0]
-    assert isinstance(row0[4], Jsonb)
-    assert row0[4].obj == {}
+    assert row0[3] == "text"
+    assert row0[4] == [0.0, 0.0, 0.0]
+    assert isinstance(row0[5], Jsonb)
+    assert row0[5].obj == {}
 
     row1 = rows[1]
-    assert row1[3] == [1.0, 1.0, 1.0]
-    assert row1[4].obj == {"fiscal_year": 2025}
+    assert row1[4] == [1.0, 1.0, 1.0]
+    assert row1[5].obj == {"fiscal_year": 2025}
 
     assert conn.commit_calls == 1
+
+
+def test_batch_insert_chunks_writes_chunk_type(monkeypatch):
+    import app.chunks as chunks_module
+
+    monkeypatch.setattr(chunks_module, "embed_texts", lambda texts: [[0.0]] * len(texts))
+    conn = FakeConnection()
+    chunk_records = [
+        ChunkRecord(doc_id="d", section="Item 8", text="prose", chunk_type="text"),
+        ChunkRecord(doc_id="d", section="Item 8", text="| a | b |", chunk_type="table"),
+    ]
+
+    batch_insert_chunks(conn, chunk_records)
+
+    _, rows, _ = conn.cursor_obj.executemany_calls[0]
+    assert [row[3] for row in rows] == ["text", "table"]
 
 
 def test_batch_insert_chunks_skips_rows_that_conflict_on_content_hash(monkeypatch):

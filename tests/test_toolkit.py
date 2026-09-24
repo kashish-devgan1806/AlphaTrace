@@ -5,7 +5,7 @@ here instead of silently breaking whatever agent imported it from
 app.toolkit."""
 from __future__ import annotations
 
-from app import chunker, chunks, db, embeddings, graph, state, toolkit
+from app import chunker, chunks, db, embeddings, graph, state, tables, toolkit, visual
 from scripts import chunk_filing, edgar_pull
 
 _HOME_MODULE = {
@@ -22,11 +22,18 @@ _HOME_MODULE = {
     "embed_text": embeddings,
     "embed_texts": embeddings,
     "embed_query": embeddings,
+    "embed_image": embeddings,
+    "embed_images": embeddings,
     "ChunkRecord": chunks,
     "batch_insert_chunks": chunks,
     "chunk_filing": chunker,
     "split_into_sections": chunker,
     "strip_html_to_text": chunker,
+    "TableRecord": tables,
+    "extract_tables": tables,
+    "PageImage": visual,
+    "rasterize_pdf": visual,
+    "batch_insert_page_embeddings": visual,
     "AgentState": state,
     "build_graph": graph,
     "ingest_node": graph,
