@@ -26,6 +26,8 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 
 - [x] Agent 2 of 7 (Indexing, `a2d1`) — grew `index_node` to chunk every filing form present in the bundle (not just the primary one), extract financial-statement tables with row/column structure preserved (`app/tables.py`, serialized to Markdown, a distinct `chunk_type` from prose), and rasterize a PDF slide-deck exhibit into page images with a CLIP visual embedding (`app/visual.py`, `sentence-transformers/clip-ViT-B-32`, its own `page_embeddings` table — an HTML exhibit has no natural page boundary, so it's chunked as text instead). Lives in `app/agents/indexing.py`; live-verified against AAPL, MSFT, NVDA
 
+- [x] Agent 3 of 7 (Research Analyst, `a3d1`) — the project's first LLM call: `analyst_node` retrieves a k=20 candidate pool from pgvector (`app/search.py`, now with an optional `chunk_type` filter), reranks it with a cross-encoder (`app/rerank.py`, `cross-encoder/ms-marco-MiniLM-L-6-v2`, top 5 kept), and calls an LLM (`app/llm.py`, Groq/`openai/gpt-oss-120b`) with a grounded-answer prompt that returns a cited draft answer — every citation resolved against the retrieved evidence, a hallucinated or unbacked citation dropped and flagged rather than trusted. Lives in `app/agents/analyst.py`; live-verified against AAPL, MSFT, NVDA (reranking improved P@5 0.63→0.70 and fixed the known NVDA-foundry hard case from rank 7 to rank 1; 3 real answers' citations hand-checked against source text)
+
 ## Architecture (evolving)
 
 - **Ingestion:** EDGAR filings + XBRL facts, earnings-call transcripts, slide decks
@@ -38,7 +40,7 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 ## Getting Started
 
 ```bash
-cp .env.example .env        # then fill in SEC_USER_AGENT and Postgres creds
+cp .env.example .env        # then fill in SEC_USER_AGENT, Postgres creds, and GROQ_API_KEY (console.groq.com)
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
@@ -66,6 +68,11 @@ from app.toolkit import build_graph
 r = build_graph().invoke({'ticker': 'AAPL'})
 print('chunks:', r['chunk_count'], 'visual pages:', r['visual_chunk_count'])
 "  # Agent 2: text + table chunks across every form, plus slide-deck page images when the exhibit is a PDF
+python -c "
+from app.toolkit import build_graph
+r = build_graph().invoke({'ticker': 'AAPL', 'question': 'How does Apple describe competition for its products?'})
+print(r['draft_answer']); [print(' ', c) for c in r['citations']]
+"  # Agent 3: retrieve -> rerank -> grounded LLM answer with citations (needs GROQ_API_KEY, and AAPL already inserted via build_corpus.py --insert)
 pytest -q                                   # offline tests, no network required
 ```
 
