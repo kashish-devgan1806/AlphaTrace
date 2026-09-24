@@ -10,3 +10,4 @@ sentence-transformers == 6.0.1
 langgraph == 1.2.12
 pymupdf == 1.28.2
 pillow == 12.3.0
+groq == 1.7.0

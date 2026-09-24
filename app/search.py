@@ -26,19 +26,28 @@ class SearchResult:
     doc_id: str
     section: str
     text: str
+    chunk_type: str = "text"
     metadata: dict = field(default_factory=dict)
     score: float = 0.0
 
 
 def search(
-    conn: psycopg.Connection, query: str, k: int = 5, ticker: str | None = None
+    conn: psycopg.Connection,
+    query: str,
+    k: int = 5,
+    ticker: str | None = None,
+    chunk_type: str | None = None,
 ) -> list[SearchResult]:
     """Return the k chunks closest to `query` by cosine distance, best first.
 
     `ticker`, if given, restricts results to that company's chunks via
     metadata->>'ticker' (no documents table yet, so it lives in the JSONB).
-    Caveat for the index: an HNSW scan fetches its nearest candidates first
-    and applies the WHERE afterwards, so a selective filter can return fewer
+    `chunk_type`, if given ("text" or "table"), restricts to that
+    chunk_type column value -- unfiltered by default, since a cross-encoder
+    reranker sorts text against table chunks on relevance more reliably
+    than a keyword heuristic could route between them upfront. Caveat for
+    the index: an HNSW scan fetches its nearest candidates first and
+    applies the WHERE afterwards, so a selective filter can return fewer
     than k rows when the index path is chosen.
 
     The query is embedded with embed_query() (instruction-prefixed, per the
@@ -61,14 +70,21 @@ def search(
         ticker = ticker.strip()
         if not ticker:
             raise ValueError("ticker must be a non-empty string when given")
+    if chunk_type is not None and chunk_type not in ("text", "table"):
+        raise ValueError(f"chunk_type must be 'text' or 'table' if given, got {chunk_type!r}")
 
     query_vector = Vector(embed_query(query))
 
-    where = ""
-    params: tuple = (query_vector, query_vector, k)
+    conditions = []
+    filter_params: list = []
     if ticker is not None:
-        where = "WHERE metadata->>'ticker' = %s"
-        params = (query_vector, ticker.upper(), query_vector, k)
+        conditions.append("metadata->>'ticker' = %s")
+        filter_params.append(ticker.upper())
+    if chunk_type is not None:
+        conditions.append("chunk_type = %s")
+        filter_params.append(chunk_type)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    params: tuple = (query_vector, *filter_params, query_vector, k)
 
     # get_connection() is non-autocommit: a bare SELECT would leave the
     # connection "idle in transaction" until the caller closes it. The
@@ -87,7 +103,7 @@ def search(
         )
         cur.execute(
             f"""
-            SELECT id, doc_id, section, text, metadata, embedding <=> %s AS distance
+            SELECT id, doc_id, section, text, chunk_type, metadata, embedding <=> %s AS distance
             FROM chunks
             {where}
             ORDER BY embedding <=> %s
@@ -103,8 +119,9 @@ def search(
             doc_id=row[1],
             section=row[2],
             text=row[3],
-            metadata=row[4],
-            score=1.0 - row[5],
+            chunk_type=row[4],
+            metadata=row[5],
+            score=1.0 - row[6],
         )
         for row in rows
     ]

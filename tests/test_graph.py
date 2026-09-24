@@ -1,13 +1,17 @@
-"""Offline tests for app/graph.py's ingest -> index scaffold. No live
-network/model: the EDGAR functions app.agents.ingestion imports are
+"""Offline tests for app/graph.py's ingest -> index -> analyst scaffold. No
+live network/model/DB: the EDGAR functions app.agents.ingestion imports are
 monkeypatched there (where ingest_node actually looks the names up now
-that it lives in its own module); index_node lives in
-app.agents.indexing — see tests/test_indexing_agent.py for its fuller
-coverage (multi-form chunking, tables, slide-deck rasterization). This
-file covers index_node's basic wiring and the graph end to end."""
+that it lives in its own module); index_node lives in app.agents.indexing
+— see tests/test_indexing_agent.py for its fuller coverage (multi-form
+chunking, tables, slide-deck rasterization); analyst_node lives in
+app.agents.analyst — see tests/test_analyst_agent.py for its fuller
+coverage. This file covers each node's basic wiring and the graph end to
+end."""
 from __future__ import annotations
 
-from app.graph import build_graph, index_node, ingest_node
+from app.graph import analyst_node, build_graph, index_node, ingest_node
+from app.rerank import RerankResult
+from app.search import SearchResult
 
 TICKER_MAP = {"AAPL": 320193}
 
@@ -40,6 +44,38 @@ def _patch_edgar(monkeypatch, ticker_map=TICKER_MAP, submissions=SUBMISSIONS_WIT
     monkeypatch.setattr("app.agents.ingestion.extract_gaap_facts", lambda companyfacts: {})
     monkeypatch.setattr("app.agents.ingestion.fetch_filing_index", lambda client, cik, accession: [])
     monkeypatch.setattr("app.agents.ingestion.find_exhibit_99", lambda rows: None)
+
+
+class _FakeConn:
+    def close(self):
+        pass
+
+
+def _patch_analyst(monkeypatch):
+    """No live Postgres/Groq: search()/generate() are monkeypatched where
+    analyst_node looks them up, same as _patch_edgar does for ingest_node."""
+    candidate = SearchResult(
+        id=1,
+        doc_id="doc-1",
+        section="Item 1A",
+        text="Risk factor text about supply chain exposure.",
+        chunk_type="text",
+        metadata={"ticker": "AAPL"},
+        score=0.9,
+    )
+    monkeypatch.setattr("app.agents.analyst.get_connection", lambda: _FakeConn())
+    monkeypatch.setattr("app.agents.analyst.search", lambda conn, query, k, ticker: [candidate])
+    monkeypatch.setattr(
+        "app.agents.analyst.rerank",
+        lambda query, results, top_k: [RerankResult(result=r, rerank_score=1.0) for r in results],
+    )
+    monkeypatch.setattr(
+        "app.agents.analyst.generate",
+        lambda prompt, json_mode=False: (
+            '{"answer": "The main risk is supply chain exposure [1].", '
+            '"citations": [{"marker": "[1]", "chunk_id": 1, "quote": "supply chain exposure"}]}'
+        ),
+    )
 
 
 def test_index_node_happy_path():
@@ -101,9 +137,10 @@ def test_index_node_no_content_anywhere_records_error():
 
 def test_build_graph_happy_path_end_to_end(monkeypatch):
     _patch_edgar(monkeypatch)
+    _patch_analyst(monkeypatch)
 
     graph = build_graph()
-    result = graph.invoke({"ticker": "AAPL"})
+    result = graph.invoke({"ticker": "AAPL", "question": "What are the main risks?"})
 
     # `ticker` came in on the initial state and no node overwrites it — the
     # merge preserves it, which is exactly the write-order guarantee
@@ -111,24 +148,30 @@ def test_build_graph_happy_path_end_to_end(monkeypatch):
     assert result["ticker"] == "AAPL"
     assert result["filings"]["10-K"]["accessionNumber"] == "0000320193-25-000100"
     assert result["chunk_count"] > 0
+    assert result["draft_answer"] == "The main risk is supply chain exposure [1]."
+    assert result["citations"] == [
+        {"marker": "[1]", "chunk_id": 1, "doc_id": "doc-1", "section": "Item 1A", "chunk_type": "text", "quote": "supply chain exposure"}
+    ]
     # LangGraph seeds an operator.add-reduced field to [] by default rather
     # than leaving it absent — unlike a bare node return dict, which omits
     # a key it never set (see tests/test_ingestion_agent.py).
     assert result["errors"] == []
 
 
-def test_build_graph_unknown_ticker_flows_error_through_both_nodes(monkeypatch):
+def test_build_graph_unknown_ticker_flows_error_through_every_node(monkeypatch):
     _patch_edgar(monkeypatch, ticker_map={})
 
     graph = build_graph()
     result = graph.invoke({"ticker": "AAPL"})
 
-    # ingest's failure and index's downstream failure both land in
-    # `errors` — the operator.add reducer accumulates rather than the
-    # second node's error silently overwriting the first.
-    assert len(result["errors"]) == 2
+    # ingest's failure, index's downstream failure, and analyst's own
+    # missing-question failure (no `question` was passed in) all land in
+    # `errors` — the operator.add reducer accumulates rather than each
+    # node's error silently overwriting the last.
+    assert len(result["errors"]) == 3
     assert "not in SEC's ticker list" in result["errors"][0]
     assert "no document_bundle to chunk" in result["errors"][1]
+    assert "no question to answer" in result["errors"][2]
     assert "chunks" not in result
 
 
@@ -142,3 +185,9 @@ def test_index_node_is_the_indexing_agents_node():
     from app.agents.indexing import index_node as agent_index_node
 
     assert index_node is agent_index_node
+
+
+def test_analyst_node_is_the_analyst_agents_node():
+    from app.agents.analyst import analyst_node as agent_analyst_node
+
+    assert analyst_node is agent_analyst_node

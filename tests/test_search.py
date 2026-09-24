@@ -100,8 +100,8 @@ def test_search_maps_rows_to_results_with_similarity_score(monkeypatch):
     _patch_embed_query(monkeypatch)
     conn = FakeConnection(
         rows=[
-            (7, "0001045810-25-000023", "Item 1A", "supply text", {"ticker": "NVDA"}, 0.25),
-            (9, "0000320193-25-000079", "Item 7", "md&a text", {"ticker": "AAPL"}, 0.5),
+            (7, "0001045810-25-000023", "Item 1A", "supply text", "text", {"ticker": "NVDA"}, 0.25),
+            (9, "0000320193-25-000079", "Item 7", "md&a text", "table", {"ticker": "AAPL"}, 0.5),
         ]
     )
 
@@ -113,6 +113,7 @@ def test_search_maps_rows_to_results_with_similarity_score(monkeypatch):
             doc_id="0001045810-25-000023",
             section="Item 1A",
             text="supply text",
+            chunk_type="text",
             metadata={"ticker": "NVDA"},
             score=0.75,
         ),
@@ -121,6 +122,7 @@ def test_search_maps_rows_to_results_with_similarity_score(monkeypatch):
             doc_id="0000320193-25-000079",
             section="Item 7",
             text="md&a text",
+            chunk_type="table",
             metadata={"ticker": "AAPL"},
             score=0.5,
         ),
@@ -179,6 +181,42 @@ def test_search_without_ticker_has_no_where_clause(monkeypatch):
 
     query, _ = conn.cursor_obj.execute_calls[-1]
     assert "WHERE" not in query
+
+
+def test_search_chunk_type_filter_adds_where_clause(monkeypatch):
+    _patch_embed_query(monkeypatch)
+    conn = FakeConnection()
+
+    search(conn, "revenue by segment", k=6, chunk_type="table")
+
+    query, params = conn.cursor_obj.execute_calls[-1]
+    assert "WHERE chunk_type = %s" in query
+    assert isinstance(params[0], Vector)
+    assert params[1] == "table"
+    assert isinstance(params[2], Vector)
+    assert params[3] == 6
+
+
+def test_search_ticker_and_chunk_type_combine_with_and(monkeypatch):
+    _patch_embed_query(monkeypatch)
+    conn = FakeConnection()
+
+    search(conn, "revenue by segment", ticker="nvda", chunk_type="table")
+
+    query, params = conn.cursor_obj.execute_calls[-1]
+    assert "WHERE metadata->>'ticker' = %s AND chunk_type = %s" in query
+    assert params[1] == "NVDA"
+    assert params[2] == "table"
+
+
+@pytest.mark.parametrize("bad_chunk_type", ["visual", "TEXT", ""])
+def test_search_rejects_invalid_chunk_type(monkeypatch, bad_chunk_type):
+    _patch_embed_query(monkeypatch)
+    conn = FakeConnection()
+
+    with pytest.raises(ValueError, match="chunk_type"):
+        search(conn, "risk factors", chunk_type=bad_chunk_type)
+    assert conn.cursor_obj.execute_calls == []
 
 
 def test_search_runs_inside_a_transaction_block(monkeypatch):

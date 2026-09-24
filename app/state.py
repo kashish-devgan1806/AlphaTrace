@@ -39,8 +39,29 @@ Field ownership (who writes, who reads):
     app.visual.batch_insert_page_embeddings(). visual_chunk_count is
     len(visual_pages), split out from chunk_count since they land in a
     different table (page_embeddings, not chunks).
-  - retrieved_evidence, draft_answer, citations: written by the analyst
-    agent; read by the critic and synthesis agents.
+  - question: written by the caller; read by the analyst agent. The
+    question retrieval and the grounded-answer LLM call are both built
+    against -- absent or blank, analyst_node records an error and returns
+    without touching pgvector or the LLM.
+  - retrieved_evidence: written by the analyst agent; read by the critic
+    and synthesis agents. The full reranked candidate pool actually handed
+    to the LLM as context (app/agents/analyst.py's TOP_K, not just the
+    chunks the LLM chose to cite) -- one dict per chunk: {chunk_id, doc_id,
+    section, chunk_type, text, retrieval_score, rerank_score}. Keeping the
+    whole pool (not just cited chunks) here means the Critic can check a
+    numeric claim against evidence the Analyst saw but didn't cite.
+  - draft_answer: written by the analyst agent; read by the critic and
+    synthesis agents. Plain text with inline citation markers ("[1]",
+    "[2]", ...) resolved against `citations` below -- the LLM's raw answer
+    text, unreformatted.
+  - citations: written by the analyst agent; read by the critic and
+    synthesis agents. One dict per marker actually used in draft_answer,
+    resolved against retrieved_evidence: {marker, chunk_id, doc_id,
+    section, chunk_type, quote}. `quote` is the exact span the LLM claims
+    supports that citation -- what a3d2's "verify 3 real answers'
+    citations by hand" checks against the source chunk text. A marker the
+    LLM cited that doesn't resolve to a retrieved chunk_id is dropped here
+    and recorded in `errors` instead, not trusted silently.
   - sentiment_result: written by the sentiment agent; read by critic and
     synthesis.
   - quant_result: written by the quant agent; read by critic and
@@ -69,7 +90,7 @@ verify-and-revise loop will need once retries are in play.
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Any, Optional, TypedDict
+from typing import Annotated, Optional, TypedDict
 
 from app.chunks import ChunkRecord
 from app.visual import PageImage
@@ -79,6 +100,7 @@ class AgentState(TypedDict, total=False):
     # --- input ---
     ticker: str
     form: str
+    question: str
 
     # --- written by `ingest` (the ingestion agent) ---
     filings: dict[str, Optional[dict]]
@@ -91,10 +113,12 @@ class AgentState(TypedDict, total=False):
     visual_pages: list[PageImage]
     visual_chunk_count: int
 
-    # --- reserved for the rest of the agent roster; unpopulated by today's scaffold ---
-    retrieved_evidence: list[Any]
+    # --- written by `analyst` (the research analyst agent) ---
+    retrieved_evidence: list[dict]
     draft_answer: Optional[str]
-    citations: list[Any]
+    citations: list[dict]
+
+    # --- reserved for the rest of the agent roster; unpopulated by today's scaffold ---
     sentiment_result: Optional[dict]
     quant_result: Optional[dict]
     critic_feedback: Optional[str]

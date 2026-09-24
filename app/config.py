@@ -33,5 +33,14 @@ class Settings(BaseSettings):
     app_host: str = "127.0.0.1"
     app_port: int = 8000
 
+    # LLM (Groq) -- the Analyst Agent's grounded-answer call. Empty by
+    # default: app/llm.py raises a clear error at call time rather than at
+    # import time, so importing app.config never requires a key to be set.
+    groq_api_key: str = ""
+    # llama-3.3-70b-versatile was retired from Groq's catalog; gpt-oss-120b
+    # is the current open-weight model with comparable context (131k) and
+    # reliable JSON-mode output for the grounded-answer prompt.
+    groq_model: str = "openai/gpt-oss-120b"
+
 
 settings = Settings()

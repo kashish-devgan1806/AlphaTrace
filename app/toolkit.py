@@ -32,6 +32,15 @@ from app.db import get_connection
 from app.embeddings import embed_image, embed_images, embed_query, embed_text, embed_texts
 from app.chunks import ChunkRecord, batch_insert_chunks
 
+# --- Retrieval ---
+from app.search import SearchResult, search
+
+# --- Reranker ---
+from app.rerank import RerankResult, rerank
+
+# --- LLM ---
+from app.llm import generate
+
 # --- Chunker ---
 from app.chunker import chunk_filing, split_into_sections, strip_html_to_text
 
@@ -42,7 +51,7 @@ from app.tables import TableRecord, extract_tables
 from app.visual import PageImage, batch_insert_page_embeddings, rasterize_pdf
 
 # --- Graph scaffold ---
-from app.graph import build_graph, ingest_node, index_node
+from app.graph import analyst_node, build_graph, ingest_node, index_node
 from app.state import AgentState
 
 __all__ = [
@@ -66,6 +75,14 @@ __all__ = [
     "embed_images",
     "ChunkRecord",
     "batch_insert_chunks",
+    # Retrieval
+    "SearchResult",
+    "search",
+    # Reranker
+    "RerankResult",
+    "rerank",
+    # LLM
+    "generate",
     # Chunker
     "chunk_filing",
     "split_into_sections",
@@ -82,4 +99,5 @@ __all__ = [
     "build_graph",
     "ingest_node",
     "index_node",
+    "analyst_node",
 ]
