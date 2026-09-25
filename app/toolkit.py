@@ -41,6 +41,12 @@ from app.rerank import RerankResult, rerank
 # --- LLM ---
 from app.llm import generate
 
+# --- Sentiment classifier ---
+from app.sentiment import SentimentLabel, classify_segments
+
+# --- Transcript parsing ---
+from app.transcript import QASegment, parse_qa_segments
+
 # --- Chunker ---
 from app.chunker import chunk_filing, split_into_sections, strip_html_to_text
 
@@ -51,7 +57,7 @@ from app.tables import TableRecord, extract_tables
 from app.visual import PageImage, batch_insert_page_embeddings, rasterize_pdf
 
 # --- Graph scaffold ---
-from app.graph import analyst_node, build_graph, ingest_node, index_node
+from app.graph import analyst_node, build_graph, ingest_node, index_node, sentiment_node
 from app.state import AgentState
 
 __all__ = [
@@ -83,6 +89,12 @@ __all__ = [
     "rerank",
     # LLM
     "generate",
+    # Sentiment classifier
+    "SentimentLabel",
+    "classify_segments",
+    # Transcript parsing
+    "QASegment",
+    "parse_qa_segments",
     # Chunker
     "chunk_filing",
     "split_into_sections",
@@ -100,4 +112,5 @@ __all__ = [
     "ingest_node",
     "index_node",
     "analyst_node",
+    "sentiment_node",
 ]

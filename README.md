@@ -28,6 +28,8 @@ A LangGraph-orchestrated crew of 7 agents ingests SEC filings (10-K/10-Q/8-K), e
 
 - [x] Agent 3 of 7 (Research Analyst, `a3d1`) — the project's first LLM call: `analyst_node` retrieves a k=20 candidate pool from pgvector (`app/search.py`, now with an optional `chunk_type` filter), reranks it with a cross-encoder (`app/rerank.py`, `cross-encoder/ms-marco-MiniLM-L-6-v2`, top 5 kept), and calls an LLM (`app/llm.py`, Groq/`openai/gpt-oss-120b`) with a grounded-answer prompt that returns a cited draft answer — every citation resolved against the retrieved evidence, a hallucinated or unbacked citation dropped and flagged rather than trusted. Lives in `app/agents/analyst.py`; live-verified against AAPL, MSFT, NVDA (reranking improved P@5 0.63→0.70 and fixed the known NVDA-foundry hard case from rank 7 to rank 1; 3 real answers' citations hand-checked against source text)
 
+- [x] Agent 4 of 7 (Sentiment / Tone, `a4d1`) — `sentiment_node` scores hedging vs. confident language in a Q&A transcript's segments with a local zero-shot NLI classifier (`app/sentiment.py`, `transformers.pipeline("zero-shot-classification")`, `facebook/bart-large-mnli`), and diffs the hedging ratio against a prior-quarter transcript when one's supplied. No live transcript-sourcing API exists yet, so `transcript`/`prior_transcript` are caller-supplied state inputs (`app/transcript.py` parses a documented `Q:`/`A:` contract into segments) rather than pulled by `ingest_node`. Lives in `app/agents/sentiment.py`, wired into the graph as `analyst -> sentiment -> END`; live-verified against two hand-written, clearly-synthetic AAPL-style transcripts
+
 ## Architecture (evolving)
 
 - **Ingestion:** EDGAR filings + XBRL facts, earnings-call transcripts, slide decks
@@ -73,6 +75,13 @@ from app.toolkit import build_graph
 r = build_graph().invoke({'ticker': 'AAPL', 'question': 'How does Apple describe competition for its products?'})
 print(r['draft_answer']); [print(' ', c) for c in r['citations']]
 "  # Agent 3: retrieve -> rerank -> grounded LLM answer with citations (needs GROQ_API_KEY, and AAPL already inserted via build_corpus.py --insert)
+python -c "
+from app.agents.sentiment import sentiment_node
+transcript = 'Questions and Answers\n\nQ: Did tone shift on receivables?\nA: Growth was temporary and tied to one customer, so we would caution against extrapolating it forward.'
+prior = 'Questions and Answers\n\nQ: Did tone shift on receivables?\nA: Receivables grew in line with revenue, exactly as planned.'
+r = sentiment_node({'transcript': transcript, 'prior_transcript': prior})
+print(r['sentiment_result'])
+"  # Agent 4: zero-shot hedging/confident classification + quarter-over-quarter tone shift (first call downloads facebook/bart-large-mnli, ~1.6GB)
 pytest -q                                   # offline tests, no network required
 ```
 

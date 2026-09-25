@@ -43,6 +43,14 @@ Field ownership (who writes, who reads):
     question retrieval and the grounded-answer LLM call are both built
     against -- absent or blank, analyst_node records an error and returns
     without touching pgvector or the LLM.
+  - transcript, prior_transcript: written by the caller; read by the
+    sentiment agent. Raw Q&A transcript text (app.transcript's documented
+    Q:/A: contract) for the current and prior quarter's earnings call --
+    no live transcript-sourcing path exists yet, so these are supplied
+    directly rather than populated by ingest_node/document_bundle.
+    `transcript` absent or blank, sentiment_node records an error and
+    returns without classifying anything; `prior_transcript` is optional
+    -- its absence just skips the quarter-over-quarter comparison.
   - retrieved_evidence: written by the analyst agent; read by the critic
     and synthesis agents. The full reranked candidate pool actually handed
     to the LLM as context (app/agents/analyst.py's TOP_K, not just the
@@ -63,7 +71,12 @@ Field ownership (who writes, who reads):
     LLM cited that doesn't resolve to a retrieved chunk_id is dropped here
     and recorded in `errors` instead, not trusted silently.
   - sentiment_result: written by the sentiment agent; read by critic and
-    synthesis.
+    synthesis. {segments: [{segment_id, question, answer, label,
+    confidence}, ...], current_summary: {segment_count, hedging_count,
+    confident_count, hedging_ratio}, prior_summary: <same shape as
+    current_summary> | None, tone_shift: {hedging_ratio_delta, direction}
+    | None}. prior_summary/tone_shift are None whenever `prior_transcript`
+    wasn't supplied or its own comparison failed.
   - quant_result: written by the quant agent; read by critic and
     synthesis.
   - critic_feedback: written by the critic agent; read by the analyst on
@@ -101,6 +114,8 @@ class AgentState(TypedDict, total=False):
     ticker: str
     form: str
     question: str
+    transcript: Optional[str]
+    prior_transcript: Optional[str]
 
     # --- written by `ingest` (the ingestion agent) ---
     filings: dict[str, Optional[dict]]

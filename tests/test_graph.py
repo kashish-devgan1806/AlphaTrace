@@ -1,17 +1,20 @@
-"""Offline tests for app/graph.py's ingest -> index -> analyst scaffold. No
-live network/model/DB: the EDGAR functions app.agents.ingestion imports are
-monkeypatched there (where ingest_node actually looks the names up now
-that it lives in its own module); index_node lives in app.agents.indexing
-— see tests/test_indexing_agent.py for its fuller coverage (multi-form
-chunking, tables, slide-deck rasterization); analyst_node lives in
-app.agents.analyst — see tests/test_analyst_agent.py for its fuller
-coverage. This file covers each node's basic wiring and the graph end to
-end."""
+"""Offline tests for app/graph.py's ingest -> index -> analyst -> sentiment
+scaffold. No live network/model/DB: the EDGAR functions app.agents.ingestion
+imports are monkeypatched there (where ingest_node actually looks the names
+up now that it lives in its own module); index_node lives in
+app.agents.indexing — see tests/test_indexing_agent.py for its fuller
+coverage (multi-form chunking, tables, slide-deck rasterization);
+analyst_node lives in app.agents.analyst — see tests/test_analyst_agent.py
+for its fuller coverage; sentiment_node lives in app.agents.sentiment —
+see tests/test_sentiment_agent.py for its fuller coverage. This file
+covers each node's basic wiring and the graph end to end."""
 from __future__ import annotations
 
-from app.graph import analyst_node, build_graph, index_node, ingest_node
+from app.graph import analyst_node, build_graph, index_node, ingest_node, sentiment_node
 from app.rerank import RerankResult
 from app.search import SearchResult
+from app.sentiment import SentimentLabel
+from app.transcript import QASegment
 
 TICKER_MAP = {"AAPL": 320193}
 
@@ -78,6 +81,18 @@ def _patch_analyst(monkeypatch):
     )
 
 
+def _patch_sentiment(monkeypatch):
+    """No real classifier/network: parse_qa_segments()/classify_segments()
+    are monkeypatched where sentiment_node looks them up, same as
+    _patch_analyst does for analyst_node."""
+    segment = QASegment(segment_id=1, question="Did tone shift?", answer="We remain confident in our guidance.")
+    monkeypatch.setattr("app.agents.sentiment.parse_qa_segments", lambda text: [segment])
+    monkeypatch.setattr(
+        "app.agents.sentiment.classify_segments",
+        lambda texts: [SentimentLabel(label="confident", confidence=0.9, scores={"confident": 0.9, "hedging": 0.1})],
+    )
+
+
 def test_index_node_happy_path():
     state = {
         "form": "10-K",
@@ -138,9 +153,16 @@ def test_index_node_no_content_anywhere_records_error():
 def test_build_graph_happy_path_end_to_end(monkeypatch):
     _patch_edgar(monkeypatch)
     _patch_analyst(monkeypatch)
+    _patch_sentiment(monkeypatch)
 
     graph = build_graph()
-    result = graph.invoke({"ticker": "AAPL", "question": "What are the main risks?"})
+    result = graph.invoke(
+        {
+            "ticker": "AAPL",
+            "question": "What are the main risks?",
+            "transcript": "Q: Did tone shift?\nA: We remain confident in our guidance.",
+        }
+    )
 
     # `ticker` came in on the initial state and no node overwrites it — the
     # merge preserves it, which is exactly the write-order guarantee
@@ -152,6 +174,10 @@ def test_build_graph_happy_path_end_to_end(monkeypatch):
     assert result["citations"] == [
         {"marker": "[1]", "chunk_id": 1, "doc_id": "doc-1", "section": "Item 1A", "chunk_type": "text", "quote": "supply chain exposure"}
     ]
+    assert result["sentiment_result"]["segments"] == [
+        {"segment_id": 1, "question": "Did tone shift?", "answer": "We remain confident in our guidance.", "label": "confident", "confidence": 0.9}
+    ]
+    assert result["sentiment_result"]["current_summary"]["hedging_ratio"] == 0.0
     # LangGraph seeds an operator.add-reduced field to [] by default rather
     # than leaving it absent — unlike a bare node return dict, which omits
     # a key it never set (see tests/test_ingestion_agent.py).
@@ -164,14 +190,16 @@ def test_build_graph_unknown_ticker_flows_error_through_every_node(monkeypatch):
     graph = build_graph()
     result = graph.invoke({"ticker": "AAPL"})
 
-    # ingest's failure, index's downstream failure, and analyst's own
-    # missing-question failure (no `question` was passed in) all land in
-    # `errors` — the operator.add reducer accumulates rather than each
+    # ingest's failure, index's downstream failure, analyst's own
+    # missing-question failure, and sentiment's own missing-transcript
+    # failure (neither `question` nor `transcript` was passed in) all land
+    # in `errors` — the operator.add reducer accumulates rather than each
     # node's error silently overwriting the last.
-    assert len(result["errors"]) == 3
+    assert len(result["errors"]) == 4
     assert "not in SEC's ticker list" in result["errors"][0]
     assert "no document_bundle to chunk" in result["errors"][1]
     assert "no question to answer" in result["errors"][2]
+    assert "no transcript to score" in result["errors"][3]
     assert "chunks" not in result
 
 
@@ -191,3 +219,9 @@ def test_analyst_node_is_the_analyst_agents_node():
     from app.agents.analyst import analyst_node as agent_analyst_node
 
     assert analyst_node is agent_analyst_node
+
+
+def test_sentiment_node_is_the_sentiment_agents_node():
+    from app.agents.sentiment import sentiment_node as agent_sentiment_node
+
+    assert sentiment_node is agent_sentiment_node
