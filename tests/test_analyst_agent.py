@@ -29,7 +29,16 @@ def _candidate(id_=1, text="Supply chain risk text.", chunk_type="text", score=0
     return SearchResult(id=id_, doc_id="doc-1", section="Item 1A", text=text, chunk_type=chunk_type, score=score)
 
 
-def _patch(monkeypatch, conn=None, candidates=None, reranked=None, llm_response=None, llm_error=None, search_error=None):
+def _patch(
+    monkeypatch,
+    conn=None,
+    candidates=None,
+    reranked=None,
+    llm_response=None,
+    llm_error=None,
+    search_error=None,
+    rerank_error=None,
+):
     conn = conn if conn is not None else FakeConn()
     monkeypatch.setattr(analyst_module, "get_connection", lambda: conn)
 
@@ -41,6 +50,8 @@ def _patch(monkeypatch, conn=None, candidates=None, reranked=None, llm_response=
     monkeypatch.setattr(analyst_module, "search", fake_search)
 
     def fake_rerank(query, results, top_k):
+        if rerank_error is not None:
+            raise rerank_error
         if reranked is not None:
             return reranked
         return [RerankResult(result=r, rerank_score=1.0 - i * 0.1) for i, r in enumerate(results)][:top_k]
@@ -128,6 +139,25 @@ def test_no_candidates_retrieved_records_error(monkeypatch):
     assert result["draft_answer"] is None
     assert result["citations"] == []
     assert "no chunks retrieved for AAPL" in result["errors"][0]
+
+
+def test_rerank_failure_returns_error_without_calling_llm(monkeypatch):
+    conn = _patch(monkeypatch, rerank_error=RuntimeError("cross-encoder unavailable"))
+
+    def fail_if_called(prompt, json_mode=False):
+        raise AssertionError("generate should not be called when reranking fails")
+
+    monkeypatch.setattr(analyst_module, "generate", fail_if_called)
+
+    result = analyst_node({"ticker": "AAPL", "question": "anything"})
+
+    assert result == {
+        "retrieved_evidence": [],
+        "draft_answer": None,
+        "citations": [],
+        "errors": ["analyst: reranking failed for AAPL: cross-encoder unavailable"],
+    }
+    assert conn.closed is True
 
 
 def test_llm_call_failure_still_returns_retrieved_evidence(monkeypatch):

@@ -99,6 +99,16 @@ def test_generate_without_json_mode_omits_response_format(monkeypatch):
     assert fake.completions.create_calls[0]["response_format"] is None
 
 
+def test_generate_passes_a_timeout(monkeypatch):
+    monkeypatch.setattr(llm.settings, "groq_api_key", "fake-key")
+    fake = FakeGroq("fake-key")
+    monkeypatch.setattr(llm, "Groq", lambda api_key: fake)
+
+    llm.generate("hello")
+
+    assert fake.completions.create_calls[0]["timeout"] == llm.REQUEST_TIMEOUT_SECONDS
+
+
 def test_client_is_constructed_once_and_reused(monkeypatch):
     monkeypatch.setattr(llm.settings, "groq_api_key", "fake-key")
     build_calls = []

@@ -334,22 +334,27 @@ def find_exhibit_99(rows: list[dict]) -> Optional[dict]:
 def _latest_annual_entry(tag_data: dict) -> Optional[dict]:
     """Pick the single best entry out of one tag's units.<UNIT>[] array.
 
-    Filters to full fiscal year 10-K entries (form == "10-K", fp == "FY") —
-    SEC never tags a standalone Q4 duration fact, so fp == "FY" is how the
-    annual figure is actually found, not an arbitrary choice. Ties are
-    broken by taking the entry with the latest period end date, since the
-    same fiscal year can appear more than once (e.g. also as a prior-year
-    comparative in a later filing).
+    Filters to full fiscal year 10-K/10-K-A entries (fp == "FY") — SEC never
+    tags a standalone Q4 duration fact, so fp == "FY" is how the annual
+    figure is actually found, not an arbitrary choice. 10-K/A is included
+    alongside 10-K since an amendment restating a prior figure is the more
+    authoritative value for that period, not a duplicate to be filtered out.
+
+    Ties are broken first by period end date, then by filed date, since the
+    same fiscal year can appear more than once (e.g. a prior-year comparative
+    in a later filing, or a 10-K/A restating the same period as its original
+    10-K) — the more recently filed entry for the same period end is the one
+    that should win.
 
     Only looks at the USD unit: these three tags are dollar P&L line items,
     so a non-USD unit would mean something is wrong with the tag choice, not
     that a legitimate alternate value should be picked up.
     """
     entries = tag_data.get("units", {}).get("USD", [])
-    annual = [e for e in entries if e.get("form") == "10-K" and e.get("fp") == "FY"]
+    annual = [e for e in entries if e.get("form") in ("10-K", "10-K/A") and e.get("fp") == "FY"]
     if not annual:
         return None
-    return max(annual, key=lambda e: e.get("end", ""))
+    return max(annual, key=lambda e: (e.get("end", ""), e.get("filed", "")))
 
 
 def extract_gaap_facts(companyfacts: dict) -> dict[str, Optional[dict]]:

@@ -15,9 +15,9 @@ table it retrieves unfiltered rather than routing by keyword heuristic --
 the reranker (below) sorts relevance more reliably than a guess at what
 "the question demands" would.
 
-Never raises: a missing question, empty retrieval, or a failed LLM call
-are all recorded in `errors` and returned as partial state rather than
-propagated.
+Never raises: a missing question, empty retrieval, a failed rerank, or a
+failed LLM call are all recorded in `errors` and returned as partial state
+rather than propagated.
 """
 from __future__ import annotations
 
@@ -147,7 +147,15 @@ def analyst_node(state: AgentState) -> dict:
             "errors": [f"analyst: no chunks retrieved for {ticker} -- has this ticker been indexed?"],
         }
 
-    reranked = rerank(question, candidates, top_k=TOP_K)
+    try:
+        reranked = rerank(question, candidates, top_k=TOP_K)
+    except Exception as exc:
+        return {
+            "retrieved_evidence": [],
+            "draft_answer": None,
+            "citations": [],
+            "errors": [f"analyst: reranking failed for {ticker}: {exc}"],
+        }
     evidence = [_evidence_dict(rr) for rr in reranked]
     prompt = build_prompt(question, evidence)
 

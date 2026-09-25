@@ -1,0 +1,13 @@
+-- Every retrieval call filters chunks by ticker (metadata->>'ticker' = ...,
+-- app/search.py) -- the primary access pattern once more than a couple of
+-- tickers are indexed. Without this, that filter has no index to use aside
+-- from the HNSW vector index's own iterative post-filter scan
+-- (hnsw.iterative_scan, app/search.py), which keeps expanding its candidate
+-- set until enough rows survive the filter -- cost that grows with total
+-- corpus size, not just the matching ticker's own chunk count.
+--
+-- A plain btree expression index, not GIN: the filter is always an exact
+-- match on one JSONB key's string value (metadata->>'ticker' = %s), which a
+-- btree over that expression serves directly -- GIN is built for
+-- containment/existence queries (@>, ?), a pattern nothing here uses.
+CREATE INDEX IF NOT EXISTS chunks_ticker_idx ON chunks ((metadata->>'ticker'));

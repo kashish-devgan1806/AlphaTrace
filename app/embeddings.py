@@ -21,6 +21,7 @@ Why this model:
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 from sentence_transformers import SentenceTransformer
@@ -46,19 +47,25 @@ logger = logging.getLogger(__name__)
 
 _model: SentenceTransformer | None = None
 _visual_model: SentenceTransformer | None = None
+_model_lock = threading.Lock()
+_visual_model_lock = threading.Lock()
 
 
 def _get_model() -> SentenceTransformer:
     global _model
     if _model is None:
-        _model = SentenceTransformer(MODEL_NAME)
+        with _model_lock:
+            if _model is None:
+                _model = SentenceTransformer(MODEL_NAME)
     return _model
 
 
 def _get_visual_model() -> SentenceTransformer:
     global _visual_model
     if _visual_model is None:
-        _visual_model = SentenceTransformer(VISUAL_MODEL_NAME)
+        with _visual_model_lock:
+            if _visual_model is None:
+                _visual_model = SentenceTransformer(VISUAL_MODEL_NAME)
     return _visual_model
 
 

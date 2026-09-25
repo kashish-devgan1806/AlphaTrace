@@ -155,8 +155,10 @@ def test_fetch_primary_document_raises_on_http_error():
         fetch_primary_document(client, cik=1, accession_number="0000000001-25-000001", primary_document="x.htm")
 
 
-def _annual_entry(fy: int, end: str, val: int, accn: str, fp: str = "FY", form: str = "10-K") -> dict:
-    return {"fy": fy, "fp": fp, "form": form, "end": end, "val": val, "accn": accn}
+def _annual_entry(
+    fy: int, end: str, val: int, accn: str, fp: str = "FY", form: str = "10-K", filed: str = ""
+) -> dict:
+    return {"fy": fy, "fp": fp, "form": form, "end": end, "val": val, "accn": accn, "filed": filed}
 
 
 def test_extract_gaap_facts_filters_to_annual_10k_entries():
@@ -189,6 +191,60 @@ def test_extract_gaap_facts_filters_to_annual_10k_entries():
     assert facts["GrossProfit"]["val"] == 169_148_000_000
     # Revenues wasn't present under any candidate tag in this fixture.
     assert facts["Revenues"] is None
+
+
+def test_extract_gaap_facts_includes_10k_a_amendments():
+    """A tag with only a 10-K/A entry (no plain 10-K) for its fiscal year
+    must still be picked up -- an amendment is the authoritative annual
+    figure for that period, not a variant to be filtered out."""
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "NetIncomeLoss": {
+                    "units": {"USD": [_annual_entry(2023, "2023-09-30", 96_995_000_000, "acc-2023-fy-a", form="10-K/A")]}
+                }
+            }
+        }
+    }
+
+    facts = extract_gaap_facts(companyfacts)
+
+    assert facts["NetIncomeLoss"]["val"] == 96_995_000_000
+    assert facts["NetIncomeLoss"]["fy"] == 2023
+
+
+def test_extract_gaap_facts_prefers_later_filed_amendment_on_tied_period_end():
+    """A 10-K/A restating the same fiscal period as its original 10-K ties on
+    `end` -- the later-filed entry (the amendment, with the corrected value)
+    must win, not an arbitrary tie-break."""
+    companyfacts = {
+        "facts": {
+            "us-gaap": {
+                "NetIncomeLoss": {
+                    "units": {
+                        "USD": [
+                            _annual_entry(
+                                2023, "2023-09-30", 96_995_000_000, "acc-2023-fy", filed="2023-11-01"
+                            ),
+                            _annual_entry(
+                                2023,
+                                "2023-09-30",
+                                95_000_000_000,
+                                "acc-2023-fy-a",
+                                form="10-K/A",
+                                filed="2024-02-15",
+                            ),
+                        ]
+                    }
+                }
+            }
+        }
+    }
+
+    facts = extract_gaap_facts(companyfacts)
+
+    assert facts["NetIncomeLoss"]["val"] == 95_000_000_000
+    assert facts["NetIncomeLoss"]["tag"] == "NetIncomeLoss"
 
 
 def test_extract_gaap_facts_falls_back_to_asc606_revenue_tag():

@@ -11,6 +11,7 @@ CANDIDATE_POOL_SIZE), not the whole table.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 
 from sentence_transformers import CrossEncoder
@@ -22,12 +23,15 @@ MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 logger = logging.getLogger(__name__)
 
 _model: CrossEncoder | None = None
+_model_lock = threading.Lock()
 
 
 def _get_model() -> CrossEncoder:
     global _model
     if _model is None:
-        _model = CrossEncoder(MODEL_NAME)
+        with _model_lock:
+            if _model is None:
+                _model = CrossEncoder(MODEL_NAME)
     return _model
 
 
